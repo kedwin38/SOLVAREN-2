@@ -11,7 +11,14 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
-import postgres from 'postgres';
+import { createRequire } from 'node:module';
+
+// 'postgres' is a dependency of apps/api. In the deployed image this script runs from
+// /app/scripts, where pnpm's isolated layout does not hoist it to a resolvable level,
+// so resolve it through the api package's manifest — which exists in both the checkout
+// and the image (apps/api/node_modules/postgres).
+const requireFromApi = createRequire(new URL('../apps/api/package.json', import.meta.url));
+const postgres = requireFromApi('postgres');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
