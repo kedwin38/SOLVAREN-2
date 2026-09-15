@@ -99,7 +99,8 @@ function DarajaTab() {
           <Empty title="No Daraja configuration" hint="Configure the integration to enable payment execution." />
         ) : (
           configs.map((c) => (
-            <div key={c.id} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
+            <div key={c.id}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
               <div>
                 <div className="small muted">Environment</div>
                 <div className="strong">{c.environment}</div>
@@ -146,6 +147,8 @@ function DarajaTab() {
                   </button>
                 )}
               </div>
+              </div>
+              <TestPaymentPanel configId={c.id} environment={c.environment} />
             </div>
           ))
         )}
@@ -162,6 +165,176 @@ function DarajaTab() {
         />
       )}
     </>
+  );
+}
+
+/**
+ * Live test payment: send a real, minimal B2C disbursement to a phone number and watch
+ * its full lifecycle — submission, callback, receipt — with an on-demand status query
+ * against M-PESA if the result is slow to arrive. The payment rides the production
+ * ledger, so it is tracked and reconciled exactly like any disbursement.
+ */
+function TestPaymentPanel({ configId, environment }: { configId: string; environment: string }) {
+  const [open, setOpen] = useState(false);
+  const [msisdn, setMsisdn] = useState('');
+  const [amountKes, setAmountKes] = useState(10);
+  const [pin, setPin] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [txn, setTxn] = useState<Awaited<ReturnType<typeof api.admin.daraja.testPaymentStatus>> | null>(null);
+  const [refreshNote, setRefreshNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!txn || txn.terminal) return;
+    const timer = setInterval(() => {
+      void api.admin.daraja
+        .testPaymentStatus(configId, txn.transactionId)
+        .then((next) => setTxn(next))
+        .catch(() => {});
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [txn, configId]);
+
+  async function send(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    setRefreshNote(null);
+    try {
+      const result = await api.admin.daraja.testPayment(configId, {
+        msisdn,
+        amountKes,
+        authorizationPin: pin,
+      });
+      setPin('');
+      const status = await api.admin.daraja.testPaymentStatus(configId, result.transactionId);
+      setTxn(status);
+    } catch (err) {
+      setError(err instanceof ApiError ? err : null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const tone =
+    txn?.status === 'SUCCESS' ? 'success' : txn?.status === 'FAILED' ? 'danger' : txn ? 'warning' : 'neutral';
+
+  return (
+    <div style={{ padding: '0 0 14px', borderBottom: '1px solid var(--border)' }}>
+      {!open ? (
+        <button className="button button-sm" data-variant="ghost" onClick={() => setOpen(true)}>
+          Send test payment ({environment})
+        </button>
+      ) : (
+        <>
+          <form onSubmit={send} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', margin: 0 }}>
+            <label className="field" style={{ margin: 0, minWidth: 180 }}>
+              <span className="field-label">Phone number</span>
+              <input
+                className="input mono"
+                placeholder="07XX XXX XXX or 2547XXXXXXXX"
+                value={msisdn}
+                onChange={(e) => setMsisdn(e.target.value)}
+                required
+              />
+            </label>
+            <label className="field" style={{ margin: 0, width: 110 }}>
+              <span className="field-label">Amount (KES)</span>
+              <input
+                className="input mono"
+                type="number"
+                min={10}
+                max={10000}
+                step={1}
+                value={amountKes}
+                onChange={(e) => setAmountKes(Number(e.target.value))}
+                required
+              />
+            </label>
+            <label className="field" style={{ margin: 0, width: 130 }}>
+              <span className="field-label">PIN</span>
+              <input
+                className="input mono"
+                type="password"
+                inputMode="numeric"
+                value={pin}
+                onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 12))}
+                required
+              />
+            </label>
+            <button className="button" data-variant="primary" type="submit" disabled={busy}>
+              {busy ? 'Sending…' : `Send KES ${amountKes}`}
+            </button>
+            <button className="button" data-variant="ghost" type="button" onClick={() => { setOpen(false); setTxn(null); setError(null); }}>
+              Close
+            </button>
+          </form>
+          <div className="small muted" style={{ marginTop: 6 }}>
+            Minimum KES 10 — the M-PESA B2C floor. The payment is real money to a real phone, tracked on the
+            ledger and reconciled automatically if the callback is delayed.
+          </div>
+          {error && <Notice tone="danger">{error.message}</Notice>}
+
+          {txn && (
+            <div className="card" style={{ marginTop: 12, marginBottom: 0, padding: 16 }}>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span className="chip" data-tone={tone}>{txn.status.replace(/_/g, ' ')}</span>
+                {!txn.terminal && (
+                  <>
+                    <span className="spinner" aria-hidden="true" style={{ width: 14, height: 14 }} />
+                    <span className="small muted">Tracking…</span>
+                    <button
+                      className="button button-sm"
+                      type="button"
+                      onClick={() =>
+                        void api.admin.daraja
+                          .testPaymentRefresh(configId, txn.transactionId)
+                          .then((r) => setRefreshNote(r.note))
+                          .catch((e) => setError(e instanceof ApiError ? e : null))
+                      }
+                    >
+                      Query M-PESA now
+                    </button>
+                  </>
+                )}
+                {txn.terminal && (
+                  <button className="button button-sm" data-variant="ghost" type="button" onClick={() => setTxn(null)}>
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {txn.receipt && (
+                <div style={{ marginTop: 10 }}>
+                  <div className="small muted">M-PESA receipt (transaction code)</div>
+                  <div
+                    className="mono"
+                    style={{ fontSize: 20, fontWeight: 700, letterSpacing: '0.04em', cursor: 'pointer' }}
+                    title="Click to copy"
+                    onClick={() => void navigator.clipboard?.writeText(txn.receipt!).then(() => setRefreshNote('Receipt copied to clipboard.'))}
+                  >
+                    {txn.receipt}
+                  </div>
+                </div>
+              )}
+
+              {(txn.failureReason || txn.providerDescription) && (
+                <div className="small" style={{ marginTop: 8 }}>
+                  {txn.failureCode && <span className="mono muted">{txn.failureCode} — </span>}
+                  {txn.failureReason ?? txn.providerDescription}
+                </div>
+              )}
+
+              <div className="small muted mono" style={{ marginTop: 8, wordBreak: 'break-all' }}>
+                Originator: {txn.originatorConversationId}
+                {txn.conversationId ? ` · Conversation: ${txn.conversationId}` : ''}
+              </div>
+              {refreshNote && <div className="small muted" style={{ marginTop: 4 }}>{refreshNote}</div>}
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -398,25 +571,53 @@ function PoliciesTab() {
   if (error && !policy) return <ErrorPane error={error} />;
   if (!policy) return <Loading />;
 
-  const numberField = (key: string, label: string, hint?: string) => (
-    <label className="field">
-      <span className="field-label">{label}</span>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <input
-          className="input"
-          type="number"
-          defaultValue={Number(policy[key] ?? 0) / 100}
-          step="0.01"
-          onBlur={(e) => {
-            const cents = Math.round(Number(e.target.value) * 100);
-            if (cents !== Number(policy[key])) void save({ [key]: cents });
-          }}
-        />
-        <span className="muted small" style={{ alignSelf: 'center' }}>KES</span>
-      </div>
-      {hint && <span className="small muted">{hint}</span>}
-    </label>
-  );
+  // Per-field policy bounds in KES (mirror of the server schema, in input units) so a
+  // bad edit is caught in the form instead of surfacing as a generic server rejection.
+  const POLICY_BOUNDS_KES: Record<string, { min: number; max: number }> = {
+    maxInstructionAmountCents: { min: 10, max: 250_000 },
+    maxBatchTotalCents: { min: 10, max: 500_000_000 },
+    highValueThresholdCents: { min: 0, max: 500_000_000 },
+    dailyDisbursementCeilingCents: { min: 0, max: 500_000_000 },
+  };
+
+  const numberField = (key: string, label: string, hint?: string) => {
+    const bounds = POLICY_BOUNDS_KES[key]!;
+    return (
+      <label className="field">
+        <span className="field-label">{label}</span>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            className="input"
+            type="number"
+            defaultValue={Number(policy[key] ?? 0) / 100}
+            step="0.01"
+            min={bounds.min}
+            max={bounds.max}
+            onBlur={(e) => {
+              const raw = e.target.value.trim();
+              if (raw === '') return; // mid-edit; do not save an empty field
+              const kes = Number(raw);
+              if (!Number.isFinite(kes) || kes < bounds.min || kes > bounds.max) {
+                setError(
+                  new ApiError(400, {
+                    code: 'FIELD_OUT_OF_RANGE',
+                    category: 'VALIDATION',
+                    message: `${label} must be between KES ${bounds.min.toLocaleString()} and ${bounds.max.toLocaleString()}. Nothing was saved.`,
+                  }),
+                );
+                e.target.value = String(Number(policy[key] ?? 0) / 100);
+                return;
+              }
+              const cents = Math.round(kes * 100);
+              if (cents !== Number(policy[key])) void save({ [key]: cents });
+            }}
+          />
+          <span className="muted small" style={{ alignSelf: 'center' }}>KES</span>
+        </div>
+        {hint && <span className="small muted">{hint}</span>}
+      </label>
+    );
+  };
 
   return (
     <>
@@ -440,8 +641,23 @@ function PoliciesTab() {
               className="input"
               type="number"
               defaultValue={Number(policy.coolingOffSeconds ?? 300)}
+              min={0}
+              max={86400}
               onBlur={(e) => {
-                const v = Number(e.target.value);
+                const raw = e.target.value.trim();
+                if (raw === '') return; // mid-edit; do not save an empty field
+                const v = Number(raw);
+                if (!Number.isFinite(v) || v < 0 || v > 86400) {
+                  setError(
+                    new ApiError(400, {
+                      code: 'FIELD_OUT_OF_RANGE',
+                      category: 'VALIDATION',
+                      message: 'Cooling-off must be between 0 and 86,400 seconds. Nothing was saved.',
+                    }),
+                  );
+                  e.target.value = String(Number(policy.coolingOffSeconds ?? 300));
+                  return;
+                }
                 if (v !== Number(policy.coolingOffSeconds)) void save({ coolingOffSeconds: v });
               }}
             />

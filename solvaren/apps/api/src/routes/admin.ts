@@ -645,6 +645,324 @@ adminRoutes.post(
 );
 
 // ---------------------------------------------------------------------------
+// Daraja test payment (integration proving, spec §9.1 "test before enable")
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/admin/daraja/:id/test-payment — release a live, minimal B2C payment to a
+ * real MSISDN to prove the configuration end-to-end: OAuth, credential, shortcode,
+ * initiator, callback URLs and result parsing, in one shot.
+ *
+ * The payment rides the same ledger as production disbursements (batch → instruction →
+ * transaction), so the existing machinery owns its lifecycle from here on: the result
+ * callback settles it, the scheduled reconciliation sweep queries the Transaction
+ * Status API if no callback arrives within the grace window, and the receipt number is
+ * recorded exactly as for any other payment. A test payment can never hang untracked.
+ *
+ * The database constrains instruction amounts to whole shillings of at least KES 10 —
+ * which matches the M-PESA B2C minimum — so a test cannot be cheaper than that.
+ */
+adminRoutes.post(
+  '/daraja/:id/test-payment',
+  requireExactLevel('L3'),
+  requirePermissions('admin:daraja'),
+  async (c) => {
+    const actor = actorOf(c);
+    assertFreshAuthentication(actor);
+    assertWebAuthnSession(actor);
+    const configId = c.req.param('id');
+    const correlationId = c.get('correlationId');
+
+    const body = z
+      .object({
+        msisdn: z
+          .string()
+          .trim()
+          .transform((v) => v.replace(/[\s()-]/g, '').replace(/^\+/, ''))
+          .transform((v) => (v.startsWith('0') && v.length === 10 ? `254${v.slice(1)}` : v))
+          .refine((v) => /^254(7|1)\d{8}$/.test(v), 'Enter a valid Kenyan mobile number (07… or 2547…)'),
+        amountKes: z.number().int().min(10, 'The minimum B2C amount is KES 10 (the M-PESA floor, enforced by the database)').max(10_000),
+        authorizationPin: z.string().min(6).max(12),
+      })
+      .parse(await c.req.json());
+
+    // The PIN gate — a payment leaves the building; it is authorized like one.
+    const pinRows = await withConnection(c.env, (sql) =>
+      sql<{ authorization_pin_hash: string | null }[]>`
+        SELECT authorization_pin_hash FROM users WHERE id = ${actor.userId} LIMIT 1
+      `,
+    );
+    const pinOk = await verifyAuthorizationPin(
+      body.authorizationPin,
+      actor.userId,
+      pinRows[0]?.authorization_pin_hash ?? null,
+    );
+    if (!pinOk) {
+      throw validationError(
+        'AUTHORIZATION_PIN_INVALID',
+        'Your Frontier Authorization PIN was not correct. No test payment was sent.',
+      );
+    }
+
+    const amountCents = body.amountKes * 100;
+    const transactionId = crypto.randomUUID();
+    const instructionId = crypto.randomUUID();
+    const batchId = crypto.randomUUID();
+    const originatorConversationId = `SLV-TEST-${transactionId}`;
+
+    const { client, credentials, config } = await withConnection(c.env, (sql) =>
+      loadDarajaClientById(sql, c.env, actor.organizationId, configId),
+    );
+
+    // Ledger rows first (committed before the wire call — the executor's ordering rule:
+    // if the process dies mid-call, the sweep finds the transaction and queries it).
+    await withConnection(c.env, (sql) =>
+      inTransaction(sql, async (tx) => {
+        // One test recipient per organisation+msisdn, reused across tests.
+        const recipient = await tx<{ id: string }[]>`
+          INSERT INTO recipients (id, organization_id, full_name, msisdn, created_by_user_id)
+          VALUES (${crypto.randomUUID()}, ${actor.organizationId},
+                  ${'Daraja test recipient'}, ${body.msisdn}, ${actor.userId})
+          ON CONFLICT (organization_id, msisdn) DO UPDATE SET updated_at = now()
+          RETURNING id
+        `;
+
+        await tx`
+          INSERT INTO payment_batches (
+            id, organization_id, batch_reference, purpose, state,
+            instruction_count, total_amount_cents, created_by_user_id, submitted_by_user_id
+          ) VALUES (
+            ${batchId}, ${actor.organizationId},
+            ${'TEST-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase()},
+            ${'Daraja integration test payment'}, ${'SUBMITTED'},
+            1, ${amountCents}, ${actor.userId}, ${actor.userId}
+          )
+        `;
+        await tx`
+          INSERT INTO payment_instructions (
+            id, organization_id, batch_id, recipient_id, recipient_name_snapshot,
+            msisdn_snapshot, amount_cents, remarks, occasion, status
+          ) VALUES (
+            ${instructionId}, ${actor.organizationId}, ${batchId}, ${recipient[0]!.id},
+            ${'Daraja test recipient'}, ${body.msisdn}, ${amountCents},
+            ${'Daraja integration test'}, ${'IntegrationTest'}, ${'SUBMITTED'}
+          )
+        `;
+        await tx`
+          INSERT INTO transactions (
+            id, organization_id, instruction_id, batch_id, status,
+            originator_conversation_id, request_fingerprint, amount_cents, status_source
+          ) VALUES (
+            ${transactionId}, ${actor.organizationId}, ${instructionId}, ${batchId},
+            ${'SUBMITTED'}, ${originatorConversationId},
+            ${`test-payment:${transactionId}`}, ${amountCents}, ${'SYSTEM'}
+          )
+        `;
+      }),
+    );
+
+    let ack: Awaited<ReturnType<typeof client.sendB2cPayment>> | null = null;
+    let submissionError: Error | null = null;
+    try {
+      ack = await client.sendB2cPayment({
+        OriginatorConversationID: originatorConversationId,
+        InitiatorName: config.initiatorName,
+        SecurityCredential: credentials.securityCredential,
+        CommandID: config.commandId,
+        Amount: String(body.amountKes),
+        PartyA: config.shortCode,
+        PartyB: body.msisdn,
+        Remarks: 'Daraja integration test',
+        QueueTimeOutURL: config.queueTimeoutUrl,
+        ResultURL: config.resultUrl,
+        Occassion: 'IntegrationTest',
+      });
+    } catch (err) {
+      submissionError = err instanceof Error ? err : new Error(String(err));
+    }
+
+    const finalize = await withConnection(c.env, (sql) =>
+      inTransaction(sql, async (tx) => {
+        if (ack) {
+          await tx`
+            UPDATE transactions
+               SET status = 'AWAITING_CALLBACK', conversation_id = ${ack!.ConversationID ?? null},
+                   status_source = 'SYNC_ACK', submitted_at = now()
+             WHERE id = ${transactionId}
+          `;
+          await tx`UPDATE payment_instructions SET status = 'AWAITING_CALLBACK' WHERE id = ${instructionId}`;
+          return { status: 'AWAITING_CALLBACK' as const };
+        }
+
+        const error = submissionError!;
+        const details = (error as { details?: { errorCode?: unknown; httpStatus?: unknown } }).details ?? {};
+        const providerCode = typeof details.errorCode === 'string' ? details.errorCode : null;
+        const errorCode = (error as { code?: unknown }).code;
+        const ambiguous =
+          errorCode === 'DARAJA_TIMEOUT' ||
+          errorCode === 'DARAJA_UNREACHABLE' ||
+          providerCode === '500.002.1001' ||
+          providerCode === '500.003.1001' ||
+          providerCode === '500.001.1001' ||
+          providerCode === '100000000' ||
+          (typeof details.httpStatus === 'number' && details.httpStatus >= 500);
+
+        if (ambiguous) {
+          // Outcome unknown: never guess. TIMEOUT + a reconciliation case puts the
+          // Transaction Status sweep on it immediately.
+          await tx`
+            UPDATE transactions
+               SET status = 'TIMEOUT', provider_result_description = ${error.message},
+                   status_source = 'SYNC_ACK', submitted_at = now()
+             WHERE id = ${transactionId}
+          `;
+          await tx`UPDATE payment_instructions SET status = 'TIMEOUT' WHERE id = ${instructionId}`;
+          await tx`
+            INSERT INTO reconciliation_cases (
+              organization_id, transaction_id, case_reference, state, opened_reason, next_query_at
+            ) VALUES (
+              ${actor.organizationId}, ${transactionId},
+              ${'REC-' + originatorConversationId.slice(-10).toUpperCase()}, 'OPEN',
+              ${'The test payment submission outcome is unknown; querying the Transaction Status API'}, now()
+            )
+            ON CONFLICT DO NOTHING
+          `;
+          return { status: 'TIMEOUT' as const };
+        }
+
+        // A clean rejection: no money moved.
+        const failureCode = typeof providerCode === 'string' ? providerCode : 'SLV_TEST_REJECTED';
+        await tx`
+          UPDATE transactions
+             SET status = 'FAILED', failure_code = ${failureCode}, failure_reason = ${error.message},
+                 failure_class = 'PROVIDER', provider_result_description = ${error.message},
+                 status_source = 'SYNC_ACK', submitted_at = now(), completed_at = now()
+           WHERE id = ${transactionId}
+        `;
+        await tx`
+          UPDATE payment_instructions SET status = 'FAILED' WHERE id = ${instructionId}
+        `;
+        return { status: 'FAILED' as const, failureCode, message: error.message };
+      }),
+    );
+
+    await withConnection(c.env, (sql) =>
+      inTransaction(sql, (tx) =>
+        writeAuditEvent(tx, {
+          organizationId: actor.organizationId,
+          actorId: actor.userId,
+          actorLevel: actor.level,
+          eventClass: 'INTEGRATION',
+          action: 'daraja.test_payment.submitted',
+          objectType: 'Transaction',
+          objectId: transactionId,
+          outcome: ack ? 'SUCCESS' : 'FAILURE',
+          correlationId,
+          securityContext: c.get('securityContext'),
+          detail: {
+            configId,
+            environment: config.environment,
+            msisdn: body.msisdn,
+            amountCents,
+            submissionStatus: finalize.status,
+            failureCode: 'failureCode' in finalize ? finalize.failureCode : null,
+          },
+        }),
+      ),
+    );
+
+    return c.json(
+      {
+        transactionId,
+        originatorConversationId,
+        status: finalize.status,
+        msisdn: body.msisdn,
+        amountCents,
+        failure: 'message' in finalize ? { code: finalize.failureCode, message: finalize.message } : null,
+        note:
+          finalize.status === 'AWAITING_CALLBACK'
+            ? 'Submitted. The result arrives on the registered callback URL; if none arrives, the reconciliation sweep queries M-PESA automatically.'
+            : undefined,
+      },
+      201,
+    );
+  },
+);
+
+/** GET /api/admin/daraja/:id/test-payment/:transactionId — live lifecycle of a test payment. */
+adminRoutes.get(
+  '/daraja/:id/test-payment/:transactionId',
+  requireExactLevel('L3'),
+  requirePermissions('admin:daraja'),
+  async (c) => {
+    const actor = actorOf(c);
+    const transactionId = c.req.param('transactionId');
+    const rows = await withConnection(c.env, (sql) =>
+      sql<
+        {
+          id: string;
+          status: string;
+          mpesa_receipt_number: string | null;
+          conversation_id: string | null;
+          originator_conversation_id: string;
+          failure_code: string | null;
+          failure_reason: string | null;
+          provider_result_description: string | null;
+          submitted_at: string | null;
+          completed_at: string | null;
+          last_status_check_at: string | null;
+        }[]
+      >`
+        SELECT id, status, mpesa_receipt_number, conversation_id, originator_conversation_id,
+               failure_code, failure_reason, provider_result_description,
+               submitted_at, completed_at, last_status_check_at
+          FROM transactions
+         WHERE id = ${transactionId} AND organization_id = ${actor.organizationId}
+         LIMIT 1
+      `,
+    );
+    const t = rows[0];
+    if (!t) throw notFoundError('TRANSACTION_NOT_FOUND', 'That test payment could not be found');
+
+    const terminal = ['SUCCESS', 'FAILED', 'CANCELLED'].includes(t.status);
+    return c.json({
+      transactionId: t.id,
+      status: t.status,
+      terminal,
+      receipt: t.mpesa_receipt_number,
+      conversationId: t.conversation_id,
+      originatorConversationId: t.originator_conversation_id,
+      failureCode: t.failure_code,
+      failureReason: t.failure_reason,
+      providerDescription: t.provider_result_description,
+      submittedAt: t.submitted_at,
+      completedAt: t.completed_at,
+      lastStatusCheckAt: t.last_status_check_at,
+    });
+  },
+);
+
+/** POST /api/admin/daraja/:id/test-payment/:transactionId/refresh — nudge the status query now. */
+adminRoutes.post(
+  '/daraja/:id/test-payment/:transactionId/refresh',
+  requireExactLevel('L3'),
+  requirePermissions('admin:daraja'),
+  async (c) => {
+    const actor = actorOf(c);
+    const transactionId = c.req.param('transactionId');
+    const message = {
+      type: 'RECONCILE_TRANSACTION' as const,
+      transactionId,
+      requestedByUserId: actor.userId,
+      organizationId: actor.organizationId,
+      correlationId: c.get('correlationId'),
+    };
+    await c.env.queue.send({ queue: 'reconciliation' as const, body: message });
+    return c.json({ queued: true, note: 'A Transaction Status query has been queued; refresh in a few seconds.' });
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Backups (spec §13)
 // ---------------------------------------------------------------------------
 

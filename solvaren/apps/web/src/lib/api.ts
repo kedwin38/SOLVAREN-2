@@ -728,6 +728,33 @@ export const api = {
           nextStep: string;
         }>('/admin/daraja', { method: 'POST', body }),
       test: (configId: string) => request<{ ok: boolean; message: string; latencyMs: number }>(`/admin/daraja/${configId}/test`, { method: 'POST' }),
+      testPayment: (configId: string, body: { msisdn: string; amountKes: number; authorizationPin: string }) =>
+        request<{
+          transactionId: string;
+          originatorConversationId: string;
+          status: string;
+          msisdn: string;
+          amountCents: number;
+          failure: { code: string; message: string } | null;
+          note?: string;
+        }>(`/admin/daraja/${configId}/test-payment`, { method: 'POST', body }),
+      testPaymentStatus: (configId: string, transactionId: string) =>
+        request<{
+          transactionId: string;
+          status: string;
+          terminal: boolean;
+          receipt: string | null;
+          conversationId: string | null;
+          originatorConversationId: string;
+          failureCode: string | null;
+          failureReason: string | null;
+          providerDescription: string | null;
+          submittedAt: string | null;
+          completedAt: string | null;
+          lastStatusCheckAt: string | null;
+        }>(`/admin/daraja/${configId}/test-payment/${transactionId}`),
+      testPaymentRefresh: (configId: string, transactionId: string) =>
+        request<{ queued: boolean; note: string }>(`/admin/daraja/${configId}/test-payment/${transactionId}/refresh`, { method: 'POST' }),
       enable: (configId: string) => request<{ status: string }>(`/admin/daraja/${configId}/enable`, { method: 'POST' }),
       disable: (configId: string, reason: string) => request<{ status: string; note: string }>(`/admin/daraja/${configId}/disable`, { method: 'POST', body: { reason } }),
     },
