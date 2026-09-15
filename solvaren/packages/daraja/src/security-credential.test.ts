@@ -11,6 +11,7 @@ import {
   cleanSecurityCredential,
   generateSecurityCredential,
   isPrecomputedCredential,
+  validateInitiatorPassword,
 } from './security-credential.js';
 import { createPublicKey, generateKeyPairSync } from 'node:crypto';
 
@@ -61,6 +62,23 @@ describe('generateSecurityCredential round-trip (shape only)', () => {
     expect(Buffer.from(credential, 'base64').byteLength).toBe(256);
     // A generated credential must itself pass the pre-computed heuristic.
     expect(isPrecomputedCredential(credential)).toBe(true);
+  });
+});
+
+describe('validateInitiatorPassword', () => {
+  // Safaricom publishes no documented composition rules, so the platform must not invent
+  // any: real portal passwords (including @ and .) must pass locally. The authoritative
+  // check is the Daraja connection test, which gates Enable.
+  it('accepts real-world portal passwords regardless of character composition', () => {
+    expect(validateInitiatorPassword('Kirinyaga@2026').ok).toBe(true);
+    expect(validateInitiatorPassword('My.Pass#2026').ok).toBe(true);
+    expect(validateInitiatorPassword('Str0ng!P@ssw0rd-2026').ok).toBe(true);
+  });
+
+  it('keeps our own length sanity bounds', () => {
+    expect(validateInitiatorPassword('abc123!').ok).toBe(false); // 7 chars
+    expect(validateInitiatorPassword('x'.repeat(129)).ok).toBe(false);
+    expect(validateInitiatorPassword('x'.repeat(128)).ok).toBe(true);
   });
 });
 

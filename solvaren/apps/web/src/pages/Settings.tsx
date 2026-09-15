@@ -293,7 +293,7 @@ function ConfigureDarajaModal({ onClose, onConfigured }: { onClose: () => void; 
             <textarea
               className="textarea mono"
               rows={2}
-              placeholder="Password (8–30 chars, only # & % $ specials) or paste the base64 credential from the portal"
+              placeholder="Initiator password, or paste the base64 SecurityCredential from the portal (line wrapping is fine)"
               value={initiatorPasswordOrCredential}
               onChange={(e) => setInitiatorPasswordOrCredential(e.target.value)}
               required

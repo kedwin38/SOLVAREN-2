@@ -306,22 +306,18 @@ export function cleanSecurityCredential(value: string): string {
 }
 
 /**
- * Portal password rules, enforced at configuration time so an operator does not discover
- * the constraint via a `2001` on a live payroll run. Safaricom restricts special
- * characters to `#`, `&`, `%`, `$` and treats `@` and `.` badly.
+ * Local sanity bounds for an initiator password.
+ *
+ * Safaricom publishes no documented composition rules for initiator passwords, so this
+ * function deliberately does NOT police characters — an unverified rule here would block
+ * an operator's real portal password locally. The authoritative validation is
+ * Safaricom's own: the credential is proven (or rejected with Daraja's error message)
+ * by the connection test this platform requires before an integration can be enabled.
+ * The bounds below are our own engineering limits, not claims about the portal.
  */
 export function validateInitiatorPassword(password: string): { ok: boolean; problems: string[] } {
   const problems: string[] = [];
   if (password.length < 8) problems.push('The password must be at least 8 characters');
-  if (password.length > 30) problems.push('The password must be at most 30 characters');
-  if (/[@.]/.test(password)) {
-    problems.push('M-PESA portal passwords must not contain "@" or "." — Safaricom treats them inconsistently');
-  }
-  const disallowed = password.match(/[^A-Za-z0-9#&%$]/g);
-  if (disallowed) {
-    problems.push(
-      `M-PESA permits only the special characters # & % $; remove: ${[...new Set(disallowed)].join(' ')}`,
-    );
-  }
+  if (password.length > 128) problems.push('The password must be at most 128 characters');
   return { ok: problems.length === 0, problems };
 }
