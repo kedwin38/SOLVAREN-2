@@ -26,6 +26,7 @@ import { requireAuth, requirePermissions, actorOf } from '../middleware/security
 import { withConnection } from '../db/client.js';
 import { loadFailureOverrides } from '../services/failure-map.js';
 import { sha256Base64Url } from '../services/crypto.js';
+import { resolveAiProvider, callAiProvider } from '../services/ai-config.js';
 import type { AuthenticatedActor } from '../services/auth.js';
 import type { AppContext, Env } from '../env.js';
 
@@ -43,46 +44,20 @@ interface AiCallResult {
   degraded: boolean;
 }
 
-/** Call the model with a strictly bounded prompt. No tools, no callbacks, no state. */
-async function callModel(env: Env, systemPrompt: string, userPrompt: string): Promise<AiCallResult> {
-  const model = env.AI_MODEL ?? 'claude-sonnet-5';
-  const started = Date.now();
+/**
+ * Call the organisation's configured model (Settings → AI assistant; falls back to the
+ * platform default, then off) with a strictly bounded prompt. No tools, no callbacks,
+ * no state — a provider outage degrades the narrative, never the deterministic layer.
+ */
+async function callModel(env: Env, organizationId: string, systemPrompt: string, userPrompt: string): Promise<AiCallResult> {
+  const config = await resolveAiProvider(env, organizationId).catch(() => null);
 
-  if (!env.AI_API_KEY) {
-    return { text: '', model, latencyMs: 0, degraded: true };
+  if (!config || config.source === 'off' || !config.apiKey) {
+    return { text: '', model: config?.model ?? 'unconfigured', latencyMs: 0, degraded: true };
   }
 
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': env.AI_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 1200,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
-      }),
-      signal: AbortSignal.timeout(25_000),
-    });
-
-    if (!response.ok) return { text: '', model, latencyMs: Date.now() - started, degraded: true };
-
-    const data = (await response.json()) as { content?: { type: string; text?: string }[] };
-    const text = (data.content ?? [])
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text ?? '')
-      .join('\n')
-      .trim();
-
-    return { text, model, latencyMs: Date.now() - started, degraded: text === '' };
-  } catch {
-    // A provider outage must never block finance work; the deterministic layer stands.
-    return { text: '', model, latencyMs: Date.now() - started, degraded: true };
-  }
+  const call = await callAiProvider(config, systemPrompt, userPrompt);
+  return { text: call.ok ? call.text : '', model: config.model, latencyMs: call.latencyMs, degraded: !call.ok };
 }
 
 const SYSTEM_PROMPT = `You are the analysis assistant inside SOLVAREN, a business disbursement control plane for M-PESA payments in Kenya.
@@ -185,7 +160,7 @@ ${context.findings.length === 0 ? '- none' : context.findings.map((f) => `- [${f
 
 Write two short paragraphs: what this batch is, and what the reviewer should check before approving. Do not recommend approving or rejecting — that decision is theirs.`;
 
-  const result = await callModel(c.env, SYSTEM_PROMPT, prompt);
+  const result = await callModel(c.env, actor.organizationId, SYSTEM_PROMPT, prompt);
   await recordInteraction(
     c.env,
     actor,
@@ -263,7 +238,7 @@ ${context.amountCents !== null ? `Amount: KES ${formatCents(context.amountCents)
 
 In three sentences: what happened, why, and what the officer should do next. Stay within the documented action above.`;
 
-  const result = await callModel(c.env, SYSTEM_PROMPT, prompt);
+  const result = await callModel(c.env, actor.organizationId, SYSTEM_PROMPT, prompt);
   await recordInteraction(c.env, actor, 'FAILURE_EXPLANATION', `Explain ${context.resolved.failureCode}`, context, result, result.text);
 
   return c.json({
@@ -321,7 +296,7 @@ ${context.departments.map((d) => `- ${d.period} ${d.name ?? 'Unassigned'}: KES $
 
 Answer using only these figures. Quote the numbers you rely on. If the data does not answer the question, say what would.`;
 
-  const result = await callModel(c.env, SYSTEM_PROMPT, prompt);
+  const result = await callModel(c.env, actor.organizationId, SYSTEM_PROMPT, prompt);
   await recordInteraction(c.env, actor, 'EXPENDITURE_ANALYSIS', body.question, context, result, result.text);
 
   return c.json({
@@ -385,7 +360,7 @@ Unresolved reconciliation cases: ${context.unresolved}
 
 Write four or five sentences in the style of a board briefing: the movement, its main driver, the risk position, and anything outstanding. State figures precisely.`;
 
-  const result = await callModel(c.env, SYSTEM_PROMPT, prompt);
+  const result = await callModel(c.env, actor.organizationId, SYSTEM_PROMPT, prompt);
   await recordInteraction(c.env, actor, 'EXECUTIVE_BRIEFING', 'Executive briefing', context, result, result.text);
 
   return c.json({

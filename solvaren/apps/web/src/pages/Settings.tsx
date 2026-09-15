@@ -9,27 +9,173 @@ import { api, ApiError } from '../lib/api.js';
 import { Card, Empty, ErrorPane, Loading, Notice, PageHeader, relativeTime } from '../components/primitives.js';
 
 export function SettingsPage() {
-  const [tab, setTab] = useState<'daraja' | 'policies' | 'permissions' | 'templates'>('daraja');
+  const [tab, setTab] = useState<'daraja' | 'ai' | 'policies' | 'permissions' | 'templates'>('daraja');
   const [error, setError] = useState<ApiError | null>(null);
 
   return (
     <>
-      <PageHeader title="Settings" subtitle="Daraja integration, organization policies, permissions, scheduling" />
+      <PageHeader title="Settings" subtitle="Daraja integration, AI assistant, organization policies, permissions, scheduling" />
 
       {error && <ErrorPane error={error} />}
 
       <div className="filters" style={{ gap: 8 }}>
-        {(['daraja', 'policies', 'permissions', 'templates'] as const).map((t) => (
+        {(['daraja', 'ai', 'policies', 'permissions', 'templates'] as const).map((t) => (
           <button key={t} className="button button-sm" data-variant={tab === t ? 'primary' : 'ghost'} onClick={() => setTab(t)}>
-            {t === 'daraja' ? 'Daraja' : t === 'policies' ? 'Policies' : t === 'permissions' ? 'Permissions' : 'Templates'}
+            {t === 'daraja' ? 'Daraja' : t === 'ai' ? 'AI assistant' : t === 'policies' ? 'Policies' : t === 'permissions' ? 'Permissions' : 'Templates'}
           </button>
         ))}
       </div>
 
       {tab === 'daraja' && <DarajaTab />}
+      {tab === 'ai' && <AiConfigTab />}
       {tab === 'policies' && <PoliciesTab />}
       {tab === 'permissions' && <PermissionsTab />}
       {tab === 'templates' && <TemplatesTab />}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AI assistant configuration (L3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The advisory model is organisation-configured: provider (Anthropic or any
+ * OpenAI-compatible endpoint, including self-hosted), base URL, model and API key.
+ * The key is stored encrypted and shown masked; the advisory layer is bound by design —
+ * read-only prompts over derived summaries, never a path to release money.
+ */
+function AiConfigTab() {
+  const [provider, setProvider] = useState<'anthropic' | 'openai-compatible'>('anthropic');
+  const [baseUrl, setBaseUrl] = useState('https://api.anthropic.com');
+  const [model, setModel] = useState('claude-sonnet-5');
+  const [apiKey, setApiKey] = useState('');
+  const [pin, setPin] = useState('');
+  const [config, setConfig] = useState<Awaited<ReturnType<typeof api.admin.ai.get>> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const load = () => api.admin.ai.get().then(setConfig).catch((e) => setError(e instanceof ApiError ? e : null));
+  useEffect(() => { void load(); }, []);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const result = await api.admin.ai.configure({ provider, baseUrl, model, apiKey, authorizationPin: pin });
+      setApiKey(''); setPin('');
+      setNotice(result.note);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err : null);
+    } finally { setBusy(false); }
+  }
+
+  async function runTest() {
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const result = await api.admin.ai.test();
+      setNotice(`${result.ok ? 'Provider test passed' : 'Provider test failed'} (${result.latencyMs} ms): ${result.message}${result.sample ? ` — "${result.sample.slice(0, 120)}"` : ''}`);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err : null);
+    } finally { setBusy(false); }
+  }
+
+  async function remove() {
+    setBusy(true); setError(null);
+    try {
+      const result = await api.admin.ai.remove({ authorizationPin: pin });
+      setPin(''); setNotice(result.note);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err : null);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <>
+      {notice && <Notice tone="success">{notice}</Notice>}
+      {error && <Notice tone="danger">{error.message}</Notice>}
+
+      {config?.configuration && (
+        <Card title="Current configuration">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+            <div><div className="small muted">Provider</div><div className="strong">{config.configuration.provider}</div></div>
+            <div><div className="small muted">Base URL</div><div className="mono small">{config.configuration.baseUrl}</div></div>
+            <div><div className="small muted">Model</div><div className="mono">{config.configuration.model}</div></div>
+            <div><div className="small muted">API key</div><div className="mono">{config.configuration.apiKeyMasked}</div></div>
+            <div>
+              <div className="small muted">Status</div>
+              <span className="chip" data-tone={config.configuration.status === 'ENABLED' ? 'success' : config.configuration.status === 'ERROR' ? 'danger' : 'warning'}>
+                {config.configuration.status}
+              </span>
+            </div>
+            <div><div className="small muted">Last test</div><div className="small">{config.configuration.lastTestAt ? `${config.configuration.lastTestOk ? 'passed' : 'failed'} · ${relativeTime(config.configuration.lastTestAt)}` : 'never'}</div></div>
+          </div>
+          {config.configuration.lastTestMessage && <div className="small muted" style={{ marginTop: 8 }}>{config.configuration.lastTestMessage}</div>}
+          <div className="card-footer">
+            <button className="button" onClick={() => void runTest()} disabled={busy}>Test provider</button>
+            <button className="button" data-variant="danger" onClick={() => void remove()} disabled={busy || pin.length < 6} title="Enter your PIN below, then press Remove">Remove configuration</button>
+          </div>
+        </Card>
+      )}
+
+      {!config?.configuration && (
+        <Card title="AI assistant — not configured for this organisation">
+          <p className="muted small">
+            {config?.platformDefault
+              ? `The platform default is active (${config.platformDefault.provider} · ${config.platformDefault.model}). Configuring below overrides it for this organisation.`
+              : 'No provider is configured — the advisory layer is off and the deterministic risk engine stands alone. Configure a provider below to enable it.'}
+          </p>
+        </Card>
+      )}
+
+      <Card title={config?.configuration ? 'Rotate configuration' : 'Configure provider'}>
+        <p className="muted small">
+          The AI layer is advisory-only by design: it analyses derived summaries, cannot call back into SOLVAREN, and can never approve or release a payment.
+          The API key is encrypted at rest and never displayed again.
+        </p>
+        <form onSubmit={save}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <label className="field">
+              <span className="field-label">Provider</span>
+              <select
+                className="select"
+                value={provider}
+                onChange={(e) => {
+                  const next = e.target.value as 'anthropic' | 'openai-compatible';
+                  setProvider(next);
+                  setBaseUrl(next === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1');
+                }}
+              >
+                <option value="anthropic">Anthropic (Messages API)</option>
+                <option value="openai-compatible">OpenAI-compatible (chat/completions — any provider or self-hosted)</option>
+              </select>
+            </label>
+            <label className="field">
+              <span className="field-label">Base URL (https)</span>
+              <input className="input mono" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} required />
+            </label>
+            <label className="field">
+              <span className="field-label">Model</span>
+              <input className="input mono" value={model} onChange={(e) => setModel(e.target.value)} required maxLength={200} />
+            </label>
+            <label className="field">
+              <span className="field-label">API key</span>
+              <input className="input mono" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} required minLength={8} placeholder="sk-… or provider key" />
+            </label>
+          </div>
+          <label className="field" style={{ maxWidth: 260 }}>
+            <span className="field-label">Your Frontier Authorization PIN</span>
+            <input className="input mono" type="password" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 12))} required />
+          </label>
+          <div className="card-footer">
+            <button type="submit" className="button" data-variant="primary" disabled={busy}>{busy ? 'Working…' : 'Save configuration'}</button>
+          </div>
+        </form>
+      </Card>
     </>
   );
 }

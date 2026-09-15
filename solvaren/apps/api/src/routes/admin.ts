@@ -48,6 +48,7 @@ import { hashPassword, assertPinShape, hashAuthorizationPin } from '../services/
 import { loadPolicy } from '../services/policy-store.js';
 import { loadEffectiveMatrix, listOverrides } from '../services/permissions.js';
 import { secretReference } from '../services/secret-store.js';
+import { aiKeyReference, validateAiConfigInput, resolveAiProvider, callAiProvider } from '../services/ai-config.js';
 import type { AppContext, BackupQueueMessage } from '../env.js';
 
 export const adminRoutes = new Hono<AppContext>();
@@ -1139,6 +1140,203 @@ adminRoutes.delete(
     return c.json({ deleted: true, note: 'Configuration removed and stored credentials destroyed.' });
   },
 );
+
+// ---------------------------------------------------------------------------
+// AI assistant configuration (spec §11) — L3 configures the advisory model.
+// ---------------------------------------------------------------------------
+
+const aiConfigSchema = z.object({
+  provider: z.enum(['anthropic', 'openai-compatible']),
+  baseUrl: z.string().trim().url().max(300),
+  model: z.string().trim().min(1).max(200),
+  apiKey: z.string().min(8).max(500),
+  authorizationPin: z.string().min(6).max(12),
+});
+
+/** GET /api/admin/ai — the masked configuration view. */
+adminRoutes.get('/ai', requireExactLevel('L3'), requirePermissions('admin:policies'), async (c) => {
+  const actor = actorOf(c);
+  const rows = await withConnection(c.env, (sql) =>
+    sql<
+      {
+        provider: 'anthropic' | 'openai-compatible';
+        base_url: string;
+        model: string;
+        api_key_last_four: string | null;
+        status: string;
+        last_test_at: string | null;
+        last_test_ok: boolean | null;
+        last_test_message: string | null;
+      }[]
+    >`
+      SELECT provider, base_url, model, api_key_last_four, status, last_test_at, last_test_ok, last_test_message
+        FROM ai_configurations WHERE organization_id = ${actor.organizationId} LIMIT 1
+    `,
+  );
+  const row = rows[0] ?? null;
+  return c.json({
+    configuration: row
+      ? {
+          provider: row.provider,
+          baseUrl: row.base_url,
+          model: row.model,
+          apiKeyMasked: `••••••••${row.api_key_last_four ?? ''}`,
+          status: row.status,
+          lastTestAt: row.last_test_at,
+          lastTestOk: row.last_test_ok,
+          lastTestMessage: row.last_test_message,
+        }
+      : null,
+    platformDefault: c.env.AI_API_KEY
+      ? { provider: 'anthropic', model: c.env.AI_MODEL ?? 'claude-sonnet-5', note: 'Used when no organisation configuration is active.' }
+      : null,
+  });
+});
+
+/** PUT /api/admin/ai — configure or rotate the organisation's AI provider. */
+adminRoutes.put('/ai', requireExactLevel('L3'), requirePermissions('admin:policies'), async (c) => {
+  const actor = actorOf(c);
+  assertFreshAuthentication(actor);
+  assertWebAuthnSession(actor);
+  const body = aiConfigSchema.parse(await c.req.json());
+  validateAiConfigInput({ provider: body.provider, baseUrl: body.baseUrl, model: body.model });
+  const correlationId = c.get('correlationId');
+
+  const pinRows = await withConnection(c.env, (sql) =>
+    sql<{ authorization_pin_hash: string | null }[]>`
+      SELECT authorization_pin_hash FROM users WHERE id = ${actor.userId} LIMIT 1
+    `,
+  );
+  const pinOk = await verifyAuthorizationPin(body.authorizationPin, actor.userId, pinRows[0]?.authorization_pin_hash ?? null);
+  if (!pinOk) {
+    throw validationError('AUTHORIZATION_PIN_INVALID', 'Your Frontier Authorization PIN was not correct. Nothing was changed.');
+  }
+
+  const keyRef = aiKeyReference(actor.organizationId);
+  await c.env.secrets.put(keyRef, body.apiKey, 'ai');
+
+  await withConnection(c.env, (sql) =>
+    inTransaction(sql, async (tx) => {
+      await tx`
+        INSERT INTO ai_configurations (
+          organization_id, provider, base_url, model, api_key_secret_ref, api_key_last_four,
+          status, last_test_at, last_test_ok, last_test_message
+        ) VALUES (
+          ${actor.organizationId}, ${body.provider}, ${body.baseUrl.replace(/\/+$/, '')}, ${body.model},
+          ${keyRef}, ${body.apiKey.slice(-4)}, 'TESTING', NULL, NULL, NULL
+        )
+        ON CONFLICT (organization_id) DO UPDATE SET
+          provider = EXCLUDED.provider,
+          base_url = EXCLUDED.base_url,
+          model = EXCLUDED.model,
+          api_key_secret_ref = EXCLUDED.api_key_secret_ref,
+          api_key_last_four = EXCLUDED.api_key_last_four,
+          status = 'TESTING', last_test_at = NULL, last_test_ok = NULL, last_test_message = NULL,
+          updated_at = now()
+      `;
+      await writeAuditEvent(tx, {
+        organizationId: actor.organizationId,
+        actorId: actor.userId,
+        actorLevel: actor.level,
+        eventClass: 'ADMINISTRATION',
+        action: 'ai.configured',
+        objectType: 'AiConfiguration',
+        objectId: actor.organizationId,
+        outcome: 'SUCCESS',
+        correlationId,
+        securityContext: c.get('securityContext'),
+        newState: { provider: body.provider, baseUrl: body.baseUrl, model: body.model, note: 'Stored TESTING; a provider test enables it.' },
+      });
+    }),
+  );
+
+  return c.json({ configured: true, note: 'Saved. Run a provider test to enable the advisory layer on this configuration.' });
+});
+
+/** POST /api/admin/ai/test — one live bounded completion against the configured model. */
+adminRoutes.post('/ai/test', requireExactLevel('L3'), requirePermissions('admin:policies'), async (c) => {
+  const actor = actorOf(c);
+  const config = await resolveAiProvider(c.env, actor.organizationId);
+  if (config.source !== 'organisation') {
+    throw stateError('AI_NOT_CONFIGURED', 'Configure the AI provider first (the test runs against the organisation configuration).');
+  }
+
+  const test = await callAiProvider(
+    config,
+    'You are a connectivity probe inside SOLVAREN. Reply with exactly: SOLVAREN AI provider test successful.',
+    'Reply with the confirmation sentence only.',
+    200,
+  );
+
+  await withConnection(c.env, (sql) =>
+    inTransaction(sql, async (tx) => {
+      await tx`
+        UPDATE ai_configurations
+           SET last_test_at = now(), last_test_ok = ${test.ok}, last_test_message = ${test.message},
+               status = ${test.ok ? 'ENABLED' : 'ERROR'}, updated_at = now()
+         WHERE organization_id = ${actor.organizationId}
+      `;
+      await writeAuditEvent(tx, {
+        organizationId: actor.organizationId,
+        actorId: actor.userId,
+        actorLevel: actor.level,
+        eventClass: 'ADMINISTRATION',
+        action: 'ai.tested',
+        objectType: 'AiConfiguration',
+        objectId: actor.organizationId,
+        outcome: test.ok ? 'SUCCESS' : 'FAILURE',
+        correlationId: c.get('correlationId'),
+        securityContext: c.get('securityContext'),
+        detail: { ok: test.ok, message: test.message, latencyMs: test.latencyMs, model: config.model },
+      });
+    }),
+  );
+
+  return c.json({ ok: test.ok, message: test.message, latencyMs: test.latencyMs, sample: test.ok ? test.text : null });
+});
+
+/** DELETE /api/admin/ai — remove the organisation configuration (revert to platform default). */
+adminRoutes.delete('/ai', requireExactLevel('L3'), requirePermissions('admin:policies'), async (c) => {
+  const actor = actorOf(c);
+  assertFreshAuthentication(actor);
+  assertWebAuthnSession(actor);
+  const body = z.object({ authorizationPin: z.string().min(6).max(12) }).parse(await c.req.json());
+
+  const pinRows = await withConnection(c.env, (sql) =>
+    sql<{ authorization_pin_hash: string | null }[]>`
+      SELECT authorization_pin_hash FROM users WHERE id = ${actor.userId} LIMIT 1
+    `,
+  );
+  const pinOk = await verifyAuthorizationPin(body.authorizationPin, actor.userId, pinRows[0]?.authorization_pin_hash ?? null);
+  if (!pinOk) {
+    throw validationError('AUTHORIZATION_PIN_INVALID', 'Your Frontier Authorization PIN was not correct. Nothing was deleted.');
+  }
+
+  await withConnection(c.env, (sql) =>
+    inTransaction(sql, async (tx) => {
+      const removed = await tx<{ api_key_secret_ref: string; model: string }[]>`
+        DELETE FROM ai_configurations WHERE organization_id = ${actor.organizationId}
+        RETURNING api_key_secret_ref, model
+      `;
+      if (removed[0]) await c.env.secrets.delete(removed[0].api_key_secret_ref).catch(() => {});
+      await writeAuditEvent(tx, {
+        organizationId: actor.organizationId,
+        actorId: actor.userId,
+        actorLevel: actor.level,
+        eventClass: 'ADMINISTRATION',
+        action: 'ai.deleted',
+        objectType: 'AiConfiguration',
+        objectId: actor.organizationId,
+        outcome: 'SUCCESS',
+        correlationId: c.get('correlationId'),
+        securityContext: c.get('securityContext'),
+        detail: { previousModel: removed[0]?.model ?? null, note: 'API key envelope destroyed; platform default applies, if any.' },
+      });
+    }),
+  );
+
+  return c.json({ deleted: true, note: 'Organisation AI configuration removed. The platform default applies if one is set.' });
+});
 
 // ---------------------------------------------------------------------------
 // Backups (spec §13)

@@ -85,7 +85,7 @@ export function hasSession(): boolean {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   /** Required on mutating payment endpoints. */
   idempotencyKey?: string;
@@ -763,6 +763,28 @@ export const api = {
         request<{ deleted: boolean; note: string }>(`/admin/daraja/${configId}`, { method: 'DELETE', body }),
       enable: (configId: string) => request<{ status: string }>(`/admin/daraja/${configId}/enable`, { method: 'POST' }),
       disable: (configId: string, reason: string) => request<{ status: string; note: string }>(`/admin/daraja/${configId}/disable`, { method: 'POST', body: { reason } }),
+    },
+
+    ai: {
+      get: () =>
+        request<{
+          configuration: {
+            provider: 'anthropic' | 'openai-compatible';
+            baseUrl: string;
+            model: string;
+            apiKeyMasked: string;
+            status: string;
+            lastTestAt: string | null;
+            lastTestOk: boolean | null;
+            lastTestMessage: string | null;
+          } | null;
+          platformDefault: { provider: string; model: string; note: string } | null;
+        }>('/admin/ai'),
+      configure: (body: { provider: 'anthropic' | 'openai-compatible'; baseUrl: string; model: string; apiKey: string; authorizationPin: string }) =>
+        request<{ configured: boolean; note: string }>('/admin/ai', { method: 'PUT', body }),
+      test: () => request<{ ok: boolean; message: string; latencyMs: number; sample: string | null }>('/admin/ai/test', { method: 'POST' }),
+      remove: (body: { authorizationPin: string }) =>
+        request<{ deleted: boolean; note: string }>('/admin/ai', { method: 'DELETE', body }),
     },
 
     backups: {
