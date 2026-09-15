@@ -21,6 +21,7 @@
 
 import {
   DarajaClient,
+  cleanSecurityCredential,
   generateSecurityCredential,
   isPrecomputedCredential,
   validateInitiatorPassword,
@@ -156,7 +157,9 @@ export async function configureDaraja(
   // Derive the SecurityCredential now, so the initiator password need never be stored.
   let securityCredential: string;
   if (isPrecomputedCredential(input.initiatorPasswordOrCredential)) {
-    securityCredential = input.initiatorPasswordOrCredential.trim();
+    // Strip line wrapping from a portal-pasted credential; embedded whitespace would be
+    // rejected by Daraja at request time even though it does not change the base64 value.
+    securityCredential = cleanSecurityCredential(input.initiatorPasswordOrCredential);
   } else {
     if (!input.mpesaCertificatePem) {
       throw validationError(

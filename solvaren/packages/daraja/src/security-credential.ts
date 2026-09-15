@@ -289,10 +289,20 @@ export function generateSecurityCredential(
  * Heuristic for "this is already an encrypted credential, not a password".
  * A Daraja credential is base64 of a 2048-bit (256-byte) ciphertext — 344 characters —
  * or 172 for a 1024-bit key. Passwords are never that shape.
+ *
+ * Credentials copied out of the Daraja portal, an email or a document frequently arrive
+ * line-wrapped. Whitespace is insignificant in base64, so the shape is judged after
+ * stripping it; a wrapped credential is indistinguishable from an unwrapped one once
+ * pasted.
  */
 export function isPrecomputedCredential(value: string): boolean {
-  const v = value.trim();
+  const v = value.replace(/\s+/g, '');
   return v.length >= 150 && /^[A-Za-z0-9+/]+={0,2}$/.test(v);
+}
+
+/** Remove insignificant whitespace from a pasted credential before it is stored. */
+export function cleanSecurityCredential(value: string): string {
+  return value.replace(/\s+/g, '');
 }
 
 /**
