@@ -613,7 +613,7 @@ authRoutes.post('/webauthn/register', requireAuth, async (c) => {
         ) VALUES (
           ${actor.organizationId}, ${actor.userId}, ${info.credentialID},
           ${Buffer.from(info.credentialPublicKey)}, ${info.counter},
-          ${[] as string[]}, ${info.credentialDeviceType === 'multiDevice' ? 'PLATFORM' : 'CROSS_PLATFORM'},
+          ${sql`'{}'::text[]`}, ${info.credentialDeviceType === 'multiDevice' ? 'PLATFORM' : 'CROSS_PLATFORM'},
           ${info.credentialBackedUp}, ${body.friendlyName ?? 'Security key'}, ${info.aaguid ?? null}
         )
       `;
