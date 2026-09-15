@@ -479,7 +479,7 @@ adminRoutes.post(
       callbackSecret: result.callbackSecret,
       callbackUrls: result.callbackUrls,
       nextStep:
-        'Register the callback URLs on the Daraja portal, then run a connection test. The integration cannot process production payments until a test passes.',
+        'No portal registration needed — B2C callback URLs travel with every payment request automatically. Keep these URLs for your production go-live declaration, then run a connection test and a KES 10 test payment: the receipt arriving proves the callback endpoint works end to end.',
     });
   },
 );
@@ -910,11 +910,12 @@ adminRoutes.get(
           submitted_at: string | null;
           completed_at: string | null;
           last_status_check_at: string | null;
+          status_source: string | null;
         }[]
       >`
         SELECT id, status, mpesa_receipt_number, conversation_id, originator_conversation_id,
                failure_code, failure_reason, provider_result_description,
-               submitted_at, completed_at, last_status_check_at
+               submitted_at, completed_at, last_status_check_at, status_source
           FROM transactions
          WHERE id = ${transactionId} AND organization_id = ${actor.organizationId}
          LIMIT 1
@@ -937,6 +938,7 @@ adminRoutes.get(
       submittedAt: t.submitted_at,
       completedAt: t.completed_at,
       lastStatusCheckAt: t.last_status_check_at,
+      statusSource: t.status_source,
     });
   },
 );

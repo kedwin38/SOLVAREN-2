@@ -11,9 +11,9 @@ Level 3 only. Requires fresh authentication, WebAuthn and the FPAC PIN.
    security key and PIN.
 3. The integration resets to `TESTING` — it cannot keep processing payments on
    credentials that have not been proven to work (schema-enforced).
-4. The callback URLs (with the embedded secret) are displayed **exactly once**. If the
-   callback secret changed (first configuration; it is preserved on rotation), register
-   the new URLs on the Daraja portal.
+4. The callback URLs (with the embedded secret) are displayed **exactly once**. Nothing
+   is registered with Safaricom — B2C sends these URLs inline with every payment request
+   — but keep them for the production go-live declaration.
 5. **Test connection** → must pass → **Enable**.
 
 Effects (all audited):

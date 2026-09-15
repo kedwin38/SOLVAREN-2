@@ -80,10 +80,15 @@ function DarajaTab() {
     <>
       {notice && <Notice tone="success">{notice}</Notice>}
       {callbackInfo && (
-        <Notice tone="warning">
-          <div className="strong">Register these callback URLs on the Daraja portal now.</div>
-          <div className="mono small" style={{ marginTop: 4 }}>{callbackInfo.urls.resultUrl}</div>
-          <div className="small muted" style={{ marginTop: 4 }}>The secret is embedded in the URL and shown only this once. Register it, then run a connection test.</div>
+        <Notice tone="info">
+          <div className="strong">Callback endpoint ready — nothing to register on the Daraja portal.</div>
+          <div className="small" style={{ marginTop: 4 }}>
+            B2C has no URL-registration step: these URLs travel automatically with every payment request.
+            Keep them for your production go-live declaration. Prove the loop end to end with a connection
+            test and a KES 10 test payment — the receipt arriving is the confirmation.
+          </div>
+          <div className="mono small" style={{ marginTop: 6 }}>{callbackInfo.urls.resultUrl}</div>
+          <div className="small muted" style={{ marginTop: 4 }}>The secret is embedded in the URL and shown only this once.</div>
         </Notice>
       )}
 
@@ -457,6 +462,16 @@ function TestPaymentPanel({ configId, environment }: { configId: string; environ
                   >
                     {txn.receipt}
                   </div>
+                  {txn.statusSource === 'CALLBACK' && (
+                    <div className="small" style={{ color: 'var(--accent)', marginTop: 4, fontWeight: 600 }}>
+                      Delivered by the result callback — your callback endpoint is verified.
+                    </div>
+                  )}
+                  {txn.statusSource === 'STATUS_QUERY' && (
+                    <div className="small muted" style={{ marginTop: 4 }}>
+                      Resolved via the Transaction Status API (the callback had not arrived when this was settled).
+                    </div>
+                  )}
                 </div>
               )}
 

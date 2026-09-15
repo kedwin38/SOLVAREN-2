@@ -85,9 +85,13 @@ and either the initiator password **plus the M-PESA public certificate** or a
 pre-computed SecurityCredential from the portal. Configure **requires** fresh
 authentication, WebAuthn and your FPAC PIN.
 
-The response shows the **callback URLs (with embedded secret) exactly once** — register
-them on the Daraja portal immediately. They are also stored in the configuration for
-reference. Then: **Test connection** → **Enable**. An untested integration cannot be
+The response shows the **callback URLs (with embedded secret) exactly once** — keep them
+for your records and for Safaricom's production go-live declaration. **There is no portal
+registration step for B2C**: the `ResultURL`/`QueueTimeOutURL` travel automatically as
+parameters on every payment request, and Safaricom calls back whatever URL each request
+carries. (URL *registration* is a C2B concept — `POST /mpesa/c2b/v1/registerurl` — and
+does not apply to this platform.) Prove the loop end to end with **Test connection**, a
+**KES 10 test payment**, then **Enable**. An untested integration cannot be
 enabled — the database refuses it.
 
 ## 7. Backup, and then a restore
@@ -105,7 +109,7 @@ proven.
 - [ ] Database reachable only via private networking
 - [ ] Edge (Cloudflare or equivalent) in front of the public service — WAF + rate limiting on `/api/auth/*`, `/api/daraja/*`, `/api/exports/*`
 - [ ] First L3 account enrolled (security key + PIN)
-- [ ] Daraja: connection test passed; integration enabled; callback URLs registered on the portal
+- [ ] Daraja: connection test passed; KES 10 test payment received its receipt via the result callback; integration enabled
 - [ ] One successful sandbox payment, one rejected, one timed-out (reconciliation case opened and resolved)
 - [ ] Backup configured, tested, run — and restore-validated once
 - [ ] Organization policies reviewed (limits, cooling-off, cut-off time, holidays)

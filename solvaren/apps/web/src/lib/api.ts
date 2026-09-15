@@ -752,6 +752,7 @@ export const api = {
           submittedAt: string | null;
           completedAt: string | null;
           lastStatusCheckAt: string | null;
+          statusSource: string | null;
         }>(`/admin/daraja/${configId}/test-payment/${transactionId}`),
       testPaymentRefresh: (configId: string, transactionId: string) =>
         request<{ queued: boolean; note: string }>(`/admin/daraja/${configId}/test-payment/${transactionId}/refresh`, { method: 'POST' }),
