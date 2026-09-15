@@ -129,9 +129,12 @@ export async function verifyPasswordStage(
     throw invalid();
   }
 
-  if (user.status !== 'ACTIVE') {
+  if (user.status !== 'ACTIVE' && user.status !== 'PENDING_ENROLMENT') {
     // Deliberately the same message as a bad password: an offboarded officer's status is
-    // not information an unauthenticated caller is entitled to.
+    // not information an unauthenticated caller is entitled to. PENDING_ENROLMENT is
+    // allowed through: a privileged account on first sign-in must authenticate with its
+    // password to reach the mandatory passkey enrolment — the login route then issues an
+    // enrolment-only session, never a privileged one.
     await verifyPassword(input.password, DUMMY_HASH);
     throw invalid();
   }

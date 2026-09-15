@@ -106,12 +106,37 @@ authRoutes.post('/login', rateLimit('ip', { ratePerSecond: 0.2, burst: 10 }), as
          WHERE user_id = ${user.id} AND status = 'ACTIVE'
       `;
       if (credentials.length === 0) {
-        // An L2/L3 account with no authenticator cannot sign in at all. The alternative
-        // — falling back to a password-only session — is precisely the bypass §7.3 forbids.
-        throw authenticationError(
-          'WEBAUTHN_ENROLMENT_REQUIRED',
-          'This account requires a security key or passkey, and none is enrolled. Contact your administrator to complete enrolment.',
-        );
+        // First sign-in of a privileged account, or recovery of a keyless one: the
+        // passkey enrolment is mandatory and happens NOW. Issue a short-lived
+        // enrolment-only session — no WebAuthn verification, so every privileged action
+        // refuses it; its entire power is registering a first key (and, if the account has
+        // no PIN yet, setting one). If the officer abandons the prompt, the session
+        // expires in 15 minutes, the account stays PENDING_ENROLMENT, and the next
+        // sign-in lands here again.
+        const enrolmentToken = randomToken(32);
+        const tokenHash = await hashSessionToken(enrolmentToken, c.env.SESSION_SIGNING_KEY);
+        const now = new Date();
+        const expiresAt = new Date(now.getTime() + 15 * 60 * 1000);
+        await sql`
+          INSERT INTO sessions (
+            organization_id, user_id, token_hash, authenticated_at, issued_at, expires_at, ip, user_agent
+          ) VALUES (
+            ${user.organization_id}, ${user.id}, ${tokenHash}, ${now}, ${now}, ${expiresAt},
+            ${security.ip}, ${security.userAgent}
+          )
+        `;
+        await sql`
+          INSERT INTO security_events (organization_id, user_id, event_type, severity, description, ip, detail)
+          VALUES (${user.organization_id}, ${user.id}, 'WEBAUTHN_ENROLMENT_SESSION_ISSUED', 'INFO',
+                  ${'A mandatory enrolment session was issued at first sign-in'}, ${security.ip}, ${sql.json({})})
+        `;
+
+        return {
+          stage: 'ENROLMENT_REQUIRED' as const,
+          token: enrolmentToken,
+          expiresAt: expiresAt.toISOString(),
+          level: user.authority_level,
+        };
       }
 
       const options = await generateAuthenticationOptions({
@@ -638,7 +663,21 @@ authRoutes.post('/webauthn/register', requireAuth, async (c) => {
       });
     });
 
-    return { registered: true as const, credentialId: info.credentialID };
+    // The console uses this to decide what the officer must do next: an account that
+    // already has a PIN (admin-created) goes straight to a normal sign-in; one without
+    // (bootstrap) must set its Frontier Authorization PIN before it can act.
+    const pinRows = await withConnection(c.env, (sql) =>
+      sql<{ pin_enrolled: boolean }[]>`
+        SELECT authorization_pin_hash IS NOT NULL AS pin_enrolled
+          FROM users WHERE id = ${actor.userId} LIMIT 1
+      `,
+    );
+
+    return {
+      registered: true as const,
+      credentialId: info.credentialID,
+      authorizationPinEnrolled: pinRows[0]?.pin_enrolled ?? false,
+    };
   });
 
   return c.json(result, 201);

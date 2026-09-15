@@ -26,11 +26,15 @@ interface PolicyRow {
 }
 
 export async function loadPolicy(sql: Sql, organizationId: string): Promise<OrganizationPolicy> {
+  // holiday_dates is delivered as jsonb (a built-in type the driver parses without
+  // fetch_types); a raw TEXT[] column arrives as its literal string when fetch_types
+  // is disabled on the pool, which the schema would reject.
   const rows = await sql<PolicyRow[]>`
     SELECT max_instruction_amount_cents, max_batch_total_cents, max_batch_instructions,
            high_value_threshold_cents, cooling_off_seconds, blocking_risk_band,
            allow_l1_failed_export, allow_l1_retry, max_export_rows,
-           daily_disbursement_ceiling_cents, release_cutoff_local_time, holiday_dates
+           daily_disbursement_ceiling_cents, release_cutoff_local_time,
+           to_jsonb(holiday_dates) AS holiday_dates
       FROM policies
      WHERE organization_id = ${organizationId}
      LIMIT 1

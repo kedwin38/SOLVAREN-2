@@ -412,6 +412,7 @@ export const api = {
       request<
         | { stage: 'AUTHENTICATED'; token: string; expiresAt: string; user: SessionResponse['user'] & { authorizationPinEnrolled: boolean } }
         | { stage: 'WEBAUTHN_REQUIRED'; ticket: string; options: MinimalWebAuthnOptions; level: string }
+        | { stage: 'ENROLMENT_REQUIRED'; token: string; expiresAt: string; level: string }
       >('/auth/login', { method: 'POST', body: { email, password, deviceId: deviceId() } }),
 
     completeWebAuthn: (ticket: string, response: unknown) =>
@@ -439,7 +440,7 @@ export const api = {
       ),
 
     webauthnRegister: (response: unknown, friendlyName?: string) =>
-      request<{ registered: boolean; credentialId: string }>('/auth/webauthn/register', {
+      request<{ registered: boolean; credentialId: string; authorizationPinEnrolled: boolean }>('/auth/webauthn/register', {
         method: 'POST',
         body: { response, ...(friendlyName ? { friendlyName } : {}) },
       }),

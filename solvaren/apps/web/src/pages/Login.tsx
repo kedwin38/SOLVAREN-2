@@ -58,6 +58,15 @@ export function Login({ onAuthenticated }: { onAuthenticated: (session: SessionR
         onAuthenticated(me);
         return;
       }
+      if (result.stage === 'ENROLMENT_REQUIRED') {
+        // First sign-in of a privileged account: mandatory passkey enrolment. The
+        // session issued is enrolment-only and expires in 15 minutes; abandoning it
+        // leaves the account pending, and the next sign-in lands here again.
+        setSessionToken(result.token);
+        setPhase({ kind: 'enrolment', token: result.token });
+        setInfo('Your account requires a security key or passkey — enrolment is mandatory to finish signing in. This prompt expires in 15 minutes.');
+        return;
+      }
       setPhase({ kind: 'webauthn', ticket: result.ticket, level: result.level });
       setInfo('Touch your security key or approve the passkey prompt to finish signing in.');
       // Immediately invoke the browser prompt for a smooth flow.
@@ -106,8 +115,16 @@ export function Login({ onAuthenticated }: { onAuthenticated: (session: SessionR
     try {
       const options = await api.auth.webauthnRegisterOptions();
       const registration = await createWebAuthnRegistration(options);
-      await api.auth.webauthnRegister(registration, 'My security key');
-      // Key enrolled — the account activates. Prompt for the FPAC PIN for privileged levels.
+      const result = await api.auth.webauthnRegister(registration, 'My security key');
+      if (result.authorizationPinEnrolled) {
+        // The account already carries a PIN (admin-created): enrolment is complete.
+        // The enrolment session is retired; the officer signs in with password + key.
+        setSessionToken(null);
+        setInfo('Security key enrolled — your account is active. Sign in with your password and the new key.');
+        setPhase({ kind: 'credentials' });
+        return;
+      }
+      // Key enrolled — the account activates. The FPAC PIN is still required for privileged levels.
       setInfo('Security key enrolled. Now set your Frontier Authorization PIN — it authorizes every payment release.');
       setPhase({ kind: 'pin-setup' as never });
     } catch (err) {
