@@ -388,6 +388,14 @@ function BatchDetailModal({
 
       {/* ---- Workflow actions ---- */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+        <a
+          className="button"
+          href="/templates/solvaren-batch-template.csv"
+          download="solvaren-batch-template.csv"
+          title="Official template: recipient name, phone, amount (whole shillings), department, reference, remarks"
+        >
+          Download CSV template
+        </a>
         {b.editable && capabilities['batch:edit'] && (
           <>
             <button className="button" onClick={() => fileRef.current?.click()} disabled={busy}>
