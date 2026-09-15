@@ -74,19 +74,33 @@ export class S3ObjectStore {
     this.config = config;
   }
 
-  private hostAndBase(): { host: string; base: string } {
+  private hostAndBase(): { host: string; base: string; canonicalPrefix: string } {
     if (this.config.endpoint) {
       const url = new URL(this.config.endpoint);
       const host = url.host;
-      const base = this.config.forcePathStyle
-        ? `${url.origin}/${this.config.bucket}`
-        : `${url.protocol}//${this.config.bucket}.${url.host}`;
-      return { host, base };
+      if (this.config.forcePathStyle) {
+        // Path-style: the bucket is the first path segment, so it MUST be part of the
+        // canonical URI — a signature over /key alone never matches what the server
+        // received at /bucket/key.
+        return {
+          host,
+          base: `${url.origin}/${this.config.bucket}`,
+          canonicalPrefix: `/${this.config.bucket}`,
+        };
+      }
+      return {
+        // Virtual-host style: the bucket is part of the Host header, so it must be part
+        // of the signed host — signing the bare endpoint host never matches the request.
+        host: `${this.config.bucket}.${url.host}`,
+        base: `${url.protocol}//${this.config.bucket}.${url.host}`,
+        canonicalPrefix: '',
+      };
     }
     // AWS S3 default: virtual-host style.
     return {
       host: `${this.config.bucket}.s3.${this.config.region}.amazonaws.com`,
       base: `https://${this.config.bucket}.s3.${this.config.region}.amazonaws.com`,
+      canonicalPrefix: '',
     };
   }
 
@@ -126,6 +140,9 @@ export class S3ObjectStore {
       signedHeaderList,
       payloadHash,
     ].join('\n');
+    if (process.env.S3_SIGN_DEBUG) {
+      console.log('CLIENT CANONICAL >>>' + canonicalRequest + '<<<');
+    }
 
     const scope = `${dateStamp}/${this.config.region}/s3/aws4_request`;
     const stringToSign = [
@@ -157,13 +174,13 @@ export class S3ObjectStore {
       timeoutMs?: number;
     } = {},
   ): Promise<Response> {
-    const { base } = this.hostAndBase();
+    const { base, canonicalPrefix } = this.hostAndBase();
     const body = options.body !== undefined ? Buffer.from(options.body) : undefined;
     const payloadHash = body ? sha256Hex(body) : SHA256_EMPTY;
 
     const { authorization, amzDate } = this.sign(
       method,
-      `/${keyPath}`,
+      `${canonicalPrefix}/${keyPath}`,
       options.query ?? new Map(),
       {
         ...(options.headers ?? {}),
