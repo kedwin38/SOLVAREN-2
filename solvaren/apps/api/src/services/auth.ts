@@ -267,8 +267,13 @@ export async function resolveSession(
   if (new Date(row.expires_at).getTime() <= Date.now()) {
     throw authenticationError('SESSION_EXPIRED', 'Your session has expired. Please sign in again.');
   }
-  if (row.user_status !== 'ACTIVE') {
+  if (row.user_status !== 'ACTIVE' && row.user_status !== 'PENDING_ENROLMENT') {
     // A privilege change or offboarding takes effect on the next request, not at next login.
+    // PENDING_ENROLMENT is deliberately allowed through: the recovery/reset flow sets that
+    // status and then issues a session whose entire purpose is completing WebAuthn
+    // enrolment (routes/auth.ts "enrolment endpoints accept it"). Privileged safety is
+    // unaffected — such sessions have webauthn_verified_at = NULL, which every
+    // WebAuthn-gated privileged action refuses independently of this check.
     throw authenticationError('ACCOUNT_INACTIVE', 'This account is no longer active.');
   }
   if (row.device_trust_status === 'BLOCKED' || row.device_trust_status === 'REVOKED') {
