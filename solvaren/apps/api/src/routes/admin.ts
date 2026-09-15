@@ -42,7 +42,6 @@ import {
   invalidateClientCache,
   type DarajaConfigRow,
 } from '../services/daraja-config.js';
-import { encryptSecret } from '../services/crypto.js';
 import { assertFreshAuthentication, assertWebAuthnSession, revokeAllSessions } from '../services/auth.js';
 import { verifyAuthorizationPin } from '../services/crypto.js';
 import { hashPassword, assertPinShape, hashAuthorizationPin } from '../services/crypto.js';
@@ -962,6 +961,183 @@ adminRoutes.post(
   },
 );
 
+/**
+ * PATCH /api/admin/daraja/:id — edit the non-secret details of a configuration
+ * (shortcode, initiator name, command) without re-entering credentials.
+ *
+ * Any of these changes affects what M-PESA sees on the next call, so the integration
+ * returns to TESTING and must pass a connection test before it can be re-enabled.
+ */
+adminRoutes.patch(
+  '/daraja/:id',
+  requireExactLevel('L3'),
+  requirePermissions('admin:daraja'),
+  async (c) => {
+    const actor = actorOf(c);
+    assertFreshAuthentication(actor);
+    assertWebAuthnSession(actor);
+    const configId = c.req.param('id');
+    const correlationId = c.get('correlationId');
+
+    const body = z
+      .object({
+        shortCode: z.string().trim().regex(/^\d{5,9}$/).optional(),
+        initiatorName: z.string().trim().min(1).max(64).optional(),
+        commandId: z.enum(['BusinessPayment', 'SalaryPayment', 'PromotionPayment']).optional(),
+        authorizationPin: z.string().min(6).max(12),
+      })
+      .refine((v) => v.shortCode || v.initiatorName || v.commandId, { message: 'Nothing to change' })
+      .parse(await c.req.json());
+
+    const pinRows = await withConnection(c.env, (sql) =>
+      sql<{ authorization_pin_hash: string | null }[]>`
+        SELECT authorization_pin_hash FROM users WHERE id = ${actor.userId} LIMIT 1
+      `,
+    );
+    const pinOk = await verifyAuthorizationPin(body.authorizationPin, actor.userId, pinRows[0]?.authorization_pin_hash ?? null);
+    if (!pinOk) {
+      throw validationError('AUTHORIZATION_PIN_INVALID', 'Your Frontier Authorization PIN was not correct. Nothing was changed.');
+    }
+
+    const updated = await withConnection(c.env, (sql) =>
+      inTransaction(sql, async (tx) => {
+        const before = await tx<DarajaConfigRow[]>`
+          SELECT * FROM daraja_configurations
+           WHERE id = ${configId} AND organization_id = ${actor.organizationId}
+           FOR UPDATE
+        `;
+        if (!before[0]) throw notFoundError('DARAJA_CONFIG_NOT_FOUND', 'That Daraja configuration could not be found');
+
+        const rows = await tx<DarajaConfigRow[]>`
+          UPDATE daraja_configurations SET
+            short_code = COALESCE(${body.shortCode ?? null}, short_code),
+            initiator_name = COALESCE(${body.initiatorName ?? null}, initiator_name),
+            command_id = COALESCE(${body.commandId ?? null}, command_id),
+            status = 'TESTING', last_test_ok = NULL, last_test_message = NULL,
+            updated_at = now()
+          WHERE id = ${configId} AND organization_id = ${actor.organizationId}
+          RETURNING *
+        `;
+        return { before: before[0]!, after: rows[0]! };
+      }),
+    );
+
+    invalidateClientCache(configId);
+
+    await withConnection(c.env, (sql) =>
+      inTransaction(sql, (tx) =>
+        writeAuditEvent(tx, {
+          organizationId: actor.organizationId,
+          actorId: actor.userId,
+          actorLevel: actor.level,
+          eventClass: 'INTEGRATION',
+          action: 'daraja.details.edited',
+          objectType: 'DarajaConfiguration',
+          objectId: configId,
+          outcome: 'SUCCESS',
+          previousState: { shortCode: updated.before.short_code, initiatorName: updated.before.initiator_name, commandId: updated.before.command_id },
+          newState: { shortCode: updated.after.short_code, initiatorName: updated.after.initiator_name, commandId: updated.after.command_id },
+          correlationId,
+          securityContext: c.get('securityContext'),
+          detail: { note: 'Non-secret details edited; credentials untouched. Integration reset to TESTING.' },
+        }),
+      ),
+    );
+
+    return c.json({
+      configuration: maskConfig(updated.after),
+      note: 'Details updated. Run a connection test before re-enabling.',
+    });
+  },
+);
+
+/**
+ * DELETE /api/admin/daraja/:id — remove a configuration and destroy its stored
+ * secret envelopes. The stored credentials are deleted from the object store; the
+ * configuration row is removed; the audit trail records who and why, forever.
+ *
+ * An ENABLED integration must be disabled first: payments already in flight still
+ * need their callback URLs until they settle.
+ */
+adminRoutes.delete(
+  '/daraja/:id',
+  requireExactLevel('L3'),
+  requirePermissions('admin:daraja'),
+  async (c) => {
+    const actor = actorOf(c);
+    assertFreshAuthentication(actor);
+    assertWebAuthnSession(actor);
+    const configId = c.req.param('id');
+    const correlationId = c.get('correlationId');
+
+    const body = z
+      .object({ reason: z.string().trim().min(3).max(500), authorizationPin: z.string().min(6).max(12) })
+      .parse(await c.req.json());
+
+    const pinRows = await withConnection(c.env, (sql) =>
+      sql<{ authorization_pin_hash: string | null }[]>`
+        SELECT authorization_pin_hash FROM users WHERE id = ${actor.userId} LIMIT 1
+      `,
+    );
+    const pinOk = await verifyAuthorizationPin(body.authorizationPin, actor.userId, pinRows[0]?.authorization_pin_hash ?? null);
+    if (!pinOk) {
+      throw validationError('AUTHORIZATION_PIN_INVALID', 'Your Frontier Authorization PIN was not correct. Nothing was deleted.');
+    }
+
+    const removed = await withConnection(c.env, (sql) =>
+      inTransaction(sql, async (tx) => {
+        const rows = await tx<DarajaConfigRow[]>`
+          SELECT * FROM daraja_configurations
+           WHERE id = ${configId} AND organization_id = ${actor.organizationId}
+           FOR UPDATE
+        `;
+        const config = rows[0];
+        if (!config) throw notFoundError('DARAJA_CONFIG_NOT_FOUND', 'That Daraja configuration could not be found');
+        if (config.status === 'ENABLED') {
+          throw stateError(
+            'DARAJA_DISABLE_FIRST',
+            'Disable the integration before deleting it — payments already in flight still need its callback URLs until they settle.',
+          );
+        }
+
+        await tx`DELETE FROM daraja_configurations WHERE id = ${configId}`;
+        return config;
+      }),
+    );
+
+    // Destroy the secret envelopes. Best-effort per object: a missing envelope must not
+    // keep the configuration row alive (it is already gone).
+    await Promise.allSettled([
+      c.env.secrets.delete(removed.consumer_key_secret_ref),
+      c.env.secrets.delete(removed.consumer_secret_secret_ref),
+      c.env.secrets.delete(removed.security_credential_ref),
+      c.env.secrets.delete(removed.callback_secret_ref),
+    ]);
+    invalidateClientCache(configId);
+
+    await withConnection(c.env, (sql) =>
+      inTransaction(sql, (tx) =>
+        writeAuditEvent(tx, {
+          organizationId: actor.organizationId,
+          actorId: actor.userId,
+          actorLevel: actor.level,
+          eventClass: 'INTEGRATION',
+          action: 'daraja.deleted',
+          objectType: 'DarajaConfiguration',
+          objectId: configId,
+          outcome: 'SUCCESS',
+          previousState: { environment: removed.environment, shortCode: removed.short_code, status: removed.status },
+          correlationId,
+          securityContext: c.get('securityContext'),
+          detail: { reason: body.reason, secretEnvelopesDestroyed: 4 },
+        }),
+      ),
+    );
+
+    return c.json({ deleted: true, note: 'Configuration removed and stored credentials destroyed.' });
+  },
+);
+
 // ---------------------------------------------------------------------------
 // Backups (spec §13)
 // ---------------------------------------------------------------------------
@@ -993,8 +1169,9 @@ adminRoutes.post(
       const secretRef = secretReference(actor.organizationId, 'backup', 'secret_key');
 
       // Credentials are encrypted before persistence and masked after save (BAK-002).
-      await c.env.secrets.put(accessRef, await encryptSecret(body.accessKeyId, c.env.SECRET_ENCRYPTION_KEY, 'backup'));
-      await c.env.secrets.put(secretRef, await encryptSecret(body.secretAccessKey, c.env.SECRET_ENCRYPTION_KEY, 'backup'));
+      // The store encrypts; hand it plaintext with the purpose label.
+      await c.env.secrets.put(accessRef, body.accessKeyId, 'backup');
+      await c.env.secrets.put(secretRef, body.secretAccessKey, 'backup');
 
       const rows = await sql<{ id: string; status: string }[]>`
         INSERT INTO backup_configurations (
@@ -1074,17 +1251,15 @@ adminRoutes.post(
       const config = configs[0];
       if (!config) throw validationError('BACKUP_NOT_CONFIGURED', 'Configure a backup target first.');
 
-      const { decryptSecret } = await import('../services/crypto.js');
-      const accessKey = await decryptSecret(
-        (await c.env.secrets.get(config.access_key_secret_ref, 'backup'))!,
-        c.env.SECRET_ENCRYPTION_KEY,
-        'backup',
-      );
-      const secretKey = await decryptSecret(
-        (await c.env.secrets.get(config.secret_key_secret_ref, 'backup'))!,
-        c.env.SECRET_ENCRYPTION_KEY,
-        'backup',
-      );
+      // The store returns decrypted plaintext.
+      const accessKey = (await c.env.secrets.get(config.access_key_secret_ref, 'backup').catch(() => null)) ?? '';
+      const secretKey = (await c.env.secrets.get(config.secret_key_secret_ref, 'backup').catch(() => null)) ?? '';
+      if (!accessKey || !secretKey) {
+        throw validationError(
+          'BACKUP_SECRETS_UNREADABLE',
+          'The stored backup credentials could not be read (they may predate a fix to secret storage). Re-enter them below.',
+        );
+      }
 
       const { S3ObjectStore } = await import('@solvaren/storage');
       const store = new S3ObjectStore({

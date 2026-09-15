@@ -755,6 +755,10 @@ export const api = {
         }>(`/admin/daraja/${configId}/test-payment/${transactionId}`),
       testPaymentRefresh: (configId: string, transactionId: string) =>
         request<{ queued: boolean; note: string }>(`/admin/daraja/${configId}/test-payment/${transactionId}/refresh`, { method: 'POST' }),
+      edit: (configId: string, body: { shortCode?: string; initiatorName?: string; commandId?: 'BusinessPayment' | 'SalaryPayment' | 'PromotionPayment'; authorizationPin: string }) =>
+        request<{ configuration: unknown; note: string }>(`/admin/daraja/${configId}`, { method: 'PATCH', body }),
+      remove: (configId: string, body: { reason: string; authorizationPin: string }) =>
+        request<{ deleted: boolean; note: string }>(`/admin/daraja/${configId}`, { method: 'DELETE', body }),
       enable: (configId: string) => request<{ status: string }>(`/admin/daraja/${configId}/enable`, { method: 'POST' }),
       disable: (configId: string, reason: string) => request<{ status: string; note: string }>(`/admin/daraja/${configId}/disable`, { method: 'POST', body: { reason } }),
     },

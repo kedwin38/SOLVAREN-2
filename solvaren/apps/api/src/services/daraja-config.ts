@@ -30,7 +30,7 @@ import {
   type B2cCommandId,
 } from '@solvaren/daraja';
 import { notFoundError, stateError, validationError } from '@solvaren/core';
-import { decryptSecret, encryptSecret, timingSafeEqual } from './crypto.js';
+import { timingSafeEqual } from './crypto.js';
 import type { SecretStore } from './secret-store.js';
 import { secretReference } from './secret-store.js';
 import type { Sql } from '../db/client.js';
@@ -196,17 +196,25 @@ export async function configureDaraja(
 
   let callbackSecret: string;
   if (existing[0]) {
-    const stored = await store.get(existing[0].callback_secret_ref, 'callback-secret');
+    // Rotation keeps the same callback secret so portal registration survives. Older
+    // records written by the double-encryption bug decrypt to nothing; treat that as
+    // "no secret stored" and mint a fresh one rather than failing the rotation.
+    const stored = await store
+      .get(existing[0].callback_secret_ref, 'callback-secret')
+      .catch(() => null);
     callbackSecret = stored ?? crypto.randomUUID() + crypto.randomUUID();
   } else {
     callbackSecret = crypto.randomUUID() + crypto.randomUUID();
   }
 
+  // The store encrypts (AES-GCM, purpose-derived keys) — callers hand it PLAINTEXT and
+  // read PLAINTEXT back. Passing a pre-encrypted envelope here wrote a double-encrypted
+  // blob under the wrong purpose label, which then failed its integrity check on read.
   await Promise.all([
-    store.put(refs.consumerKey, await encryptSecret(input.consumerKey, env.SECRET_ENCRYPTION_KEY, 'daraja')),
-    store.put(refs.consumerSecret, await encryptSecret(input.consumerSecret, env.SECRET_ENCRYPTION_KEY, 'daraja')),
-    store.put(refs.securityCredential, await encryptSecret(securityCredential, env.SECRET_ENCRYPTION_KEY, 'daraja')),
-    store.put(refs.callbackSecret, await encryptSecret(callbackSecret, env.SECRET_ENCRYPTION_KEY, 'callback-secret')),
+    store.put(refs.consumerKey, input.consumerKey, 'daraja'),
+    store.put(refs.consumerSecret, input.consumerSecret, 'daraja'),
+    store.put(refs.securityCredential, securityCredential, 'daraja'),
+    store.put(refs.callbackSecret, callbackSecret, 'callback-secret'),
   ]);
 
   // THE FIX: the secret is embedded in every stored callback URL, because Safaricom
@@ -376,13 +384,16 @@ async function buildClient(sql: Sql, env: Env, config: DarajaConfigRow) {
 }
 
 async function loadCredentials(env: Env, config: DarajaConfigRow): Promise<DarajaCredentials> {
-  const [keyEnvelope, secretEnvelope, credentialEnvelope] = await Promise.all([
-    env.secrets.get(config.consumer_key_secret_ref, 'daraja'),
-    env.secrets.get(config.consumer_secret_secret_ref, 'daraja'),
-    env.secrets.get(config.security_credential_ref, 'daraja'),
+  // The store returns decrypted plaintext (single encryption, purpose-derived key).
+  // An envelope that predates the storage fix fails its integrity check and reads as
+  // absent — the operator reconfigures, which rewrites all four envelopes correctly.
+  const [consumerKey, consumerSecret, securityCredential] = await Promise.all([
+    env.secrets.get(config.consumer_key_secret_ref, 'daraja').catch(() => null),
+    env.secrets.get(config.consumer_secret_secret_ref, 'daraja').catch(() => null),
+    env.secrets.get(config.security_credential_ref, 'daraja').catch(() => null),
   ]);
 
-  if (!keyEnvelope || !secretEnvelope || !credentialEnvelope) {
+  if (!consumerKey || !consumerSecret || !securityCredential) {
     throw stateError(
       'DARAJA_SECRETS_MISSING',
       'The stored Daraja credentials could not be retrieved. Reconfigure the integration.',
@@ -390,9 +401,9 @@ async function loadCredentials(env: Env, config: DarajaConfigRow): Promise<Daraj
   }
 
   return {
-    consumerKey: await decryptSecret(keyEnvelope, env.SECRET_ENCRYPTION_KEY, 'daraja'),
-    consumerSecret: await decryptSecret(secretEnvelope, env.SECRET_ENCRYPTION_KEY, 'daraja'),
-    securityCredential: await decryptSecret(credentialEnvelope, env.SECRET_ENCRYPTION_KEY, 'daraja'),
+    consumerKey,
+    consumerSecret,
+    securityCredential,
     initiatorName: config.initiator_name,
     shortCode: config.short_code,
   };
@@ -411,8 +422,7 @@ export async function loadCallbackSecret(
      LIMIT 1
   `;
   if (!rows[0]) return null;
-  const envelope = await env.secrets.get(rows[0].callback_secret_ref, 'callback-secret');
-  return envelope ? decryptSecret(envelope, env.SECRET_ENCRYPTION_KEY, 'callback-secret') : null;
+  return env.secrets.get(rows[0].callback_secret_ref, 'callback-secret').catch(() => null);
 }
 
 export { timingSafeEqual };

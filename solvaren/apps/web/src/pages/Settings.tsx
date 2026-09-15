@@ -57,6 +57,8 @@ function DarajaTab() {
   const [error, setError] = useState<ApiError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [configureOpen, setConfigureOpen] = useState(false);
+  const [editing, setEditing] = useState<DarajaConfigView | null>(null);
+  const [deleting, setDeleting] = useState<DarajaConfigView | null>(null);
   const [callbackInfo, setCallbackInfo] = useState<{ secret: string; urls: { resultUrl: string } } | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -127,6 +129,12 @@ function DarajaTab() {
                 <button className="button button-sm" onClick={() => void api.admin.daraja.test(c.id).then((r) => setNotice(r.message)).then(() => setReloadKey((k) => k + 1)).catch((e) => setError(e instanceof ApiError ? e : null))}>
                   Test
                 </button>
+                <button className="button button-sm" onClick={() => setEditing(c)}>
+                  Edit details
+                </button>
+                <button className="button button-sm" data-variant="danger" onClick={() => setDeleting(c)}>
+                  Delete
+                </button>
                 {c.status !== 'ENABLED' && c.lastTestOk && (
                   <button className="button button-sm" data-variant="primary" onClick={() => void api.admin.daraja.enable(c.id).then(() => setReloadKey((k) => k + 1)).catch((e) => setError(e instanceof ApiError ? e : null))}>
                     Enable
@@ -154,6 +162,21 @@ function DarajaTab() {
         )}
       </Card>
 
+      {editing && (
+        <EditDarajaModal
+          config={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(note) => { setEditing(null); setNotice(note); setReloadKey((k) => k + 1); }}
+        />
+      )}
+      {deleting && (
+        <DeleteDarajaModal
+          config={deleting}
+          onClose={() => setDeleting(null)}
+          onDeleted={(note) => { setDeleting(null); setNotice(note); setReloadKey((k) => k + 1); }}
+        />
+      )}
+
       {configureOpen && (
         <ConfigureDarajaModal
           onClose={() => setConfigureOpen(false)}
@@ -165,6 +188,125 @@ function DarajaTab() {
         />
       )}
     </>
+  );
+}
+
+/** Edit the non-secret details of a configuration; credentials are untouched. */
+function EditDarajaModal({ config, onClose, onSaved }: { config: DarajaConfigView; onClose: () => void; onSaved: (note: string) => void }) {
+  const [shortCode, setShortCode] = useState(config.shortCode);
+  const [initiatorName, setInitiatorName] = useState(config.initiatorName);
+  const [commandId, setCommandId] = useState(config.commandId);
+  const [pin, setPin] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.admin.daraja.edit(config.id, {
+        shortCode: shortCode !== config.shortCode ? shortCode : undefined,
+        initiatorName: initiatorName !== config.initiatorName ? initiatorName : undefined,
+        commandId: commandId !== config.commandId ? (commandId as 'BusinessPayment' | 'SalaryPayment' | 'PromotionPayment') : undefined,
+        authorizationPin: pin,
+      });
+      onSaved(result.note);
+    } catch (err) {
+      setError(err instanceof ApiError ? err : null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal" role="dialog" aria-modal="true">
+        <h2>Edit Daraja details — {config.environment}</h2>
+        <p className="muted small">Credentials are not changed. Because these details affect what M-PESA sees, the integration returns to TESTING until a connection test passes.</p>
+        {error && <Notice tone="danger">{error.message}</Notice>}
+        <form onSubmit={submit}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <label className="field">
+              <span className="field-label">Shortcode (5–9 digits)</span>
+              <input className="input mono" value={shortCode} onChange={(e) => setShortCode(e.target.value.replace(/\D/g, '').slice(0, 9))} pattern="\d{5,9}" required />
+            </label>
+            <label className="field">
+              <span className="field-label">Command</span>
+              <select className="select" value={commandId} onChange={(e) => setCommandId(e.target.value)}>
+                <option value="BusinessPayment">BusinessPayment</option>
+                <option value="SalaryPayment">SalaryPayment</option>
+                <option value="PromotionPayment">PromotionPayment</option>
+              </select>
+            </label>
+          </div>
+          <label className="field">
+            <span className="field-label">Initiator name</span>
+            <input className="input mono" value={initiatorName} onChange={(e) => setInitiatorName(e.target.value)} required maxLength={64} />
+          </label>
+          <label className="field" style={{ maxWidth: 260 }}>
+            <span className="field-label">Your Frontier Authorization PIN</span>
+            <input className="input mono" type="password" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 12))} required />
+          </label>
+          <div className="card-footer">
+            <button type="button" className="button" data-variant="ghost" onClick={onClose}>Cancel</button>
+            <button type="submit" className="button" data-variant="primary" disabled={busy}>{busy ? 'Saving…' : 'Save details'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/** Delete a configuration and destroy its stored credential envelopes. */
+function DeleteDarajaModal({ config, onClose, onDeleted }: { config: DarajaConfigView; onClose: () => void; onDeleted: (note: string) => void }) {
+  const [reason, setReason] = useState('');
+  const [pin, setPin] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.admin.daraja.remove(config.id, { reason, authorizationPin: pin });
+      onDeleted(result.note);
+    } catch (err) {
+      setError(err instanceof ApiError ? err : null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal" role="dialog" aria-modal="true">
+        <h2>Delete Daraja configuration — {config.environment}</h2>
+        <Notice tone="danger">
+          This permanently removes the configuration and destroys the stored consumer key, consumer secret,
+          SecurityCredential and callback secret. The audit trail of this deletion is permanent. This cannot be undone.
+        </Notice>
+        {config.status === 'ENABLED' && (
+          <Notice tone="warning">This integration is ENABLED. Disable it first — payments in flight still need its callback URLs.</Notice>
+        )}
+        {error && <Notice tone="danger">{error.message}</Notice>}
+        <form onSubmit={submit}>
+          <label className="field">
+            <span className="field-label">Reason (recorded in the audit trail)</span>
+            <input className="input" value={reason} onChange={(e) => setReason(e.target.value)} minLength={3} maxLength={500} required />
+          </label>
+          <label className="field" style={{ maxWidth: 260 }}>
+            <span className="field-label">Your Frontier Authorization PIN</span>
+            <input className="input mono" type="password" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 12))} required />
+          </label>
+          <div className="card-footer">
+            <button type="button" className="button" data-variant="ghost" onClick={onClose}>Cancel</button>
+            <button type="submit" className="button" data-variant="danger" disabled={busy}>{busy ? 'Deleting…' : 'Delete permanently'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 
