@@ -24,6 +24,7 @@ import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
 } from '@simplewebauthn/server';
+import { isoUint8Array } from '@simplewebauthn/server/helpers';
 import {
   authenticationError,
   validationError,
@@ -576,6 +577,12 @@ authRoutes.post('/webauthn/register/options', requireAuth, async (c) => {
     const generated = await generateRegistrationOptions({
       rpName: c.env.WEBAUTHN_RP_NAME,
       rpID: c.env.WEBAUTHN_RP_ID,
+      // The credential is bound to the ACCOUNT, not merely to this site: a stable user
+      // handle (the account's UUID) means every enrolment — first sign-in, recovery,
+      // a second key — attaches to the same identity, and the authenticator's passkey
+      // manager shows the officer's email (userName) rather than an anonymous entry.
+      // Without this, the library mints a random handle per enrolment.
+      userID: isoUint8Array.fromUTF8String(actor.userId),
       userName: actor.email,
       userDisplayName: actor.fullName,
       attestationType: 'none',
