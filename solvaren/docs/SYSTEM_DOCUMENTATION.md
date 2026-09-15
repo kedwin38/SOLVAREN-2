@@ -98,10 +98,17 @@ level + organisation policy overrides — never trusted from the client.
    hybrid via QR/phone supported). Passkeys are attached to a **stable user handle**
    (the account UUID) — re-enrolling devices, changing roles, or reissuing sessions never
    orphans the credential, and the handle is identical across every registration.
-3. **Authorisation PIN** — separate numeric PIN demanded at the moment of privileged
+3. **Step-up (passkey confirmation)** — privileged mutations demand authentication
+   fresher than five minutes (`STEP_UP_REQUIRED`). The relief valve is a **two-phase
+   passkey ceremony, no password**: `POST /api/auth/step-up/options` issues a
+   server-held single-use challenge+ticket; `POST /api/auth/step-up` verifies the
+   assertion, advances the authenticator signature counter (cloned-key detection), and
+   refreshes `authenticated_at` AND `webauthn_verified_at` **in place**. The console
+   intercepts `STEP_UP_REQUIRED`/`WEBAUTHN_REQUIRED` globally: one passkey dialog
+   appears, and the blocked operation retries itself — no logout, on any page.
+4. **Authorisation PIN** — separate numeric PIN demanded at the moment of privileged
    mutation (releasing payments, editing Daraja credentials, AI configuration, exports).
-   Fresh-session + WebAuthn + PIN stack for the highest-risk operations.
-4. **Recovery codes** — generated at enrolment; single-use, audited.
+5. **Recovery codes** — generated at enrolment; single-use, audited.
 
 ### 3.3 Secrets architecture
 
@@ -219,6 +226,12 @@ organisation ai_configurations row (status ≠ DISABLED, key present)
 - **Providers:** `anthropic` (Messages API, `x-api-key` + `anthropic-version`) and
   `openai-compatible` (any `/chat/completions` endpoint — OpenAI, Groq, OpenRouter,
   vLLM, Ollama-over-TLS, …; Bearer auth).
+- **Base URL tolerance:** a trailing `/v1` is detected either way —
+  `https://api.anthropic.com` and `https://api.anthropic.com/v1` both resolve to the
+  Messages endpoint; the same holds for OpenAI-compatible bases (OpenAI, Groq's
+  `/openai/v1`, OpenRouter's `/api/v1`). `max_tokens` is sent only to Anthropic
+  (where it is required); it is omitted for OpenAI-compatible providers because newer
+  OpenAI models reject it and every compatible server applies its own default cap.
 - Org config fields: provider, HTTPS-only base URL, model (1–200 chars), API key
   (encrypted envelope, purpose `ai`; only last four digits ever redisplayed).
 
@@ -269,15 +282,18 @@ with Zod validation surfaced as `VALIDATION_ERROR` + field detail.
 | 0001 | foundation | orgs, users, sessions, keys, recovery |
 | 0002 | payments | batches, instructions, transactions, callbacks |
 | 0003 | audit immutability | triggers locking the audit ledger |
-| 0004 | backups & exports | backup attempts, export staging |
+| 0004 | backups & exports | backup attempts, export staging, ai_interactions, security events |
 | 0005 | seed failure reasons | canonical Daraja failure taxonomy |
 | 0006 | views | reporting/ops views |
 | 0007 | job queue | SKIP LOCKED queue tables |
-| 0009 | UUID defaults | id defaults for sessions/instructions |
+| 0009 | UUID defaults | id defaults for the entity tables |
 | 0010 | instruction status lifecycle | guarded status-only updates (callback/recon write-back) |
 | 0011 | AI configuration | `ai_configurations` (provider, base_url, model, key ref, status, last_test_*) |
+| 0012 | UUID defaults completion | the two tables 0009 missed: `ai_interactions`, `backup_attempts` |
 
-(0008 was reserved/never shipped — numbering intentionally skips.)
+(0008 was reserved/never shipped — numbering intentionally skips. The rate-limit and
+scheduler-marker tables were audited in the same pass: natural primary keys, no id
+column, nothing needed.)
 
 ### 8.2 Queues and workers
 
@@ -363,6 +379,10 @@ immediately after first login in any fresh deployment.
 | `SECRET_TAMPERED` on credential reads | stale MinIO secret + double-encryption purpose mismatch | rotated secret both sides; canonical `put(plaintext, purpose)` store contract |
 | SigV4 `SignatureDoesNotMatch` | path-style canonical URI missing bucket prefix; vhost host missing bucket | `hostAndBase` canonical prefix + 3 signature re-derivation tests |
 | Policies tab 422 | `TEXT[]` as flat string under `fetch_types:false` | `to_jsonb` casts |
+| **Every AI feature 500** (`cor_22DE9ADDEACC73F64D31` et al.) | `ai_interactions.id` had no default (0009 never covered it); the audit insert crashed *after* the model call | migration 0012 (`ai_interactions` + `backup_attempts` defaults) — verified live: all AI features 200 with real narratives |
+| **Policy change 500** `malformed array literal: ""` | `sql.array([])` serialises as `''` under `fetch_types:false` | escaped array-literal parameter + `::uuid[]`/`::text[]` cast for ALL array bindings (holiday dates, `ANY()` set filters) |
+| **Privileged ops forced a full re-login** | step-up verified against a challenge the client never received (generated + verified in one cycle — could never succeed); password-first UX | two-phase passkey step-up (`/step-up/options` + `/step-up`), server-held single-use tickets, session refreshed in place, global UI intercept + automatic retry — no password involved |
+| Step-up options 422 | Zod parsed the Hono `json()` *promise* | removed the pointless empty-body parse |
 | Test payment 500 | audit-immutability trigger blocked status write-backs | migration 0010 guarded lifecycle |
 | New L2 users `INVALID_CREDENTIALS` at first login | PENDING_ENROLMENT refused stage 1 | enrolment-session flow (`ENROLMENT_REQUIRED`, 15-min window) |
 | "Something went wrong" at passkey enrolment | transports serialised as JS `${[]}` | `sql`'{}'::text[]`` literal |
@@ -370,11 +390,14 @@ immediately after first login in any fresh deployment.
 | False instruction to register callbacks on portal | doc error vs real Daraja behaviour | inline per-request Result/QueueTimeOut URLs; UI corrected |
 | Deployed build "looked old" | judged mid-BUILDING | verify build completion + bundle hash first |
 
-**Final verified state (2026-09-15):** 176/176 tests · reports catalogue (12 families),
-async generation (202 → COMPLETED 640 ms), download verified · policies GET 200 ·
-first-login enrolment flow verified · stable WebAuthn handle verified · AI endpoints
-live (`GET /api/admin/ai` 200) · AI tab shipped in live bundle · UI/UX vision-audited
-clean.
+**Final verified state (2026-09-15, end of day):** 176/176 tests · reports catalogue (12
+families), async generation (202 → COMPLETED 640 ms), download verified · policies
+change verified live with empty **and** populated holiday dates (200) · **all AI
+features verified live — batch analysis, failure explanation and executive briefing
+return 200 with real model narratives** (`ai_interactions` recording, degraded:false) ·
+step-up options issues real challenge+ticket (200); bad ticket refused cleanly (401) ·
+first-login enrolment flow verified · stable WebAuthn handle verified · UI/UX
+vision-audited clean.
 
 ---
 
