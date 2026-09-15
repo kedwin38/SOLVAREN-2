@@ -480,6 +480,66 @@ label.field > .field-label {
 .checkbox { display: flex; gap: var(--s2); align-items: flex-start; margin-bottom: var(--s3); cursor: pointer; }
 .checkbox input { margin-top: 3px; accent-color: var(--accent); width: 15px; height: 15px; }
 
+/* Segmented control — paste vs upload, and similar mode choices. */
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  gap: 2px;
+  margin-bottom: var(--s2);
+}
+.segmented-item {
+  border: none;
+  border-radius: calc(var(--radius) - 2px);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  padding: 4px 14px;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), box-shadow var(--transition);
+}
+.segmented-item:hover { color: var(--ink); }
+.segmented-item[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 650;
+  box-shadow: var(--shadow-1);
+}
+.segmented-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* File upload field — a quiet drop-target-styled label wrapping the native input. */
+.file-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s4);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--accent-softer);
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+.file-field:hover, .file-field:focus-within { border-color: var(--accent); }
+.file-field input[type='file'] {
+  /* Visually hidden but focusable: the styled label is the affordance. */
+  position: absolute;
+  width: 1px; height: 1px;
+  opacity: 0;
+  overflow: hidden;
+}
+.file-field-label { font-weight: 600; font-size: 13px; color: var(--accent); }
+.file-field-hint { font-size: 12px; color: var(--ink-3); }
+.file-field-status {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------------------------------------------------------------------------
    Cards, stats, notices
 --------------------------------------------------------------------------- */

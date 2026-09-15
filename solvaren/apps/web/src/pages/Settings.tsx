@@ -172,10 +172,60 @@ function ConfigureDarajaModal({ onClose, onConfigured }: { onClose: () => void; 
   const [consumerKey, setConsumerKey] = useState('');
   const [consumerSecret, setConsumerSecret] = useState('');
   const [initiatorPasswordOrCredential, setInitiatorPasswordOrCredential] = useState('');
+  const [certMode, setCertMode] = useState<'paste' | 'upload'>('paste');
   const [mpesaCertificatePem, setMpesaCertificatePem] = useState('');
+  const [certFileInfo, setCertFileInfo] = useState<string | null>(null);
+  const [certError, setCertError] = useState<string | null>(null);
   const [authorizationPin, setAuthorizationPin] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
+
+  /**
+   * Accept an M-PESA public certificate as uploaded from the Daraja portal.
+   * Handles all three forms the portal hands out: PEM text, a text file of bare
+   * base64, and a binary DER .cer/.der. Binary DER is base64-encoded here because
+   * the API takes text — the server's DER walker accepts base64-encoded DER.
+   */
+  async function onCertificateFile(file: File) {
+    setCertError(null);
+    setCertFileInfo(null);
+    try {
+      const buffer = new Uint8Array(await file.arrayBuffer());
+      const kb = (buffer.byteLength / 1024).toFixed(1);
+      let text: string | null = null;
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+      } catch {
+        text = null; // binary
+      }
+
+      if (text !== null) {
+        const trimmed = text.trim();
+        if (trimmed.startsWith('-----BEGIN')) {
+          setMpesaCertificatePem(trimmed);
+          setCertFileInfo(`${file.name} · ${kb} KB · PEM certificate`);
+        } else if (/^[A-Za-z0-9+/=\s]+$/.test(trimmed) && trimmed.replace(/\s+/g, '').length > 100) {
+          setMpesaCertificatePem(trimmed);
+          setCertFileInfo(`${file.name} · ${kb} KB · base64 certificate`);
+        } else {
+          setCertError('That file is neither a PEM certificate nor base64 certificate data.');
+        }
+      } else if (buffer[0] === 0x30) {
+        // DER: an ASN.1 SEQUENCE — base64 the bytes; the server decodes and walks them.
+        let binary = '';
+        const chunk = 0x8000;
+        for (let i = 0; i < buffer.length; i += chunk) {
+          binary += String.fromCharCode(...buffer.subarray(i, i + chunk));
+        }
+        setMpesaCertificatePem(btoa(binary));
+        setCertFileInfo(`${file.name} · ${kb} KB · binary DER — converted`);
+      } else {
+        setCertError('That file does not look like a certificate (expected DER, PEM or base64).');
+      }
+    } catch {
+      setCertError('The certificate file could not be read.');
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -249,16 +299,54 @@ function ConfigureDarajaModal({ onClose, onConfigured }: { onClose: () => void; 
               required
             />
           </label>
-          <label className="field">
-            <span className="field-label">M-PESA public certificate (PEM) — required with a password, not with a pre-computed credential</span>
-            <textarea
-              className="textarea mono"
-              rows={3}
-              placeholder={'-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----'}
-              value={mpesaCertificatePem}
-              onChange={(e) => setMpesaCertificatePem(e.target.value)}
-            />
-          </label>
+          <div className="field">
+            <span className="field-label">
+              M-PESA public certificate — required with a password, not with a pre-computed credential
+            </span>
+            <div className="segmented" role="group" aria-label="Certificate input method">
+              <button
+                type="button"
+                className="segmented-item"
+                aria-pressed={certMode === 'paste'}
+                onClick={() => { setCertMode('paste'); setCertError(null); }}
+              >
+                Paste
+              </button>
+              <button
+                type="button"
+                className="segmented-item"
+                aria-pressed={certMode === 'upload'}
+                onClick={() => { setCertMode('upload'); setCertError(null); }}
+              >
+                Upload file
+              </button>
+            </div>
+
+            {certMode === 'paste' ? (
+              <textarea
+                className="textarea mono"
+                rows={3}
+                placeholder={'-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----\n\nor paste base64 certificate data'}
+                value={mpesaCertificatePem}
+                onChange={(e) => { setMpesaCertificatePem(e.target.value); setCertFileInfo(null); }}
+              />
+            ) : (
+              <label className="file-field">
+                <input
+                  type="file"
+                  accept=".cer,.der,.crt,.pem,application/pkix-cert,application/x-x509-ca-cert,application/x-pem-file"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) void onCertificateFile(file);
+                  }}
+                />
+                <span className="file-field-label">Choose certificate file</span>
+                <span className="file-field-hint">.cer · .der · .crt · .pem — binary DER is converted automatically</span>
+                {certFileInfo && <span className="file-field-status">{certFileInfo}</span>}
+              </label>
+            )}
+            {certError && <div className="small" style={{ color: 'var(--danger)', marginTop: 4 }}>{certError}</div>}
+          </div>
           <label className="field" style={{ maxWidth: 260 }}>
             <span className="field-label">Your Frontier Authorization PIN</span>
             <input className="input mono" type="password" inputMode="numeric" value={authorizationPin} onChange={(e) => setAuthorizationPin(e.target.value.replace(/\D/g, '').slice(0, 12))} required />
