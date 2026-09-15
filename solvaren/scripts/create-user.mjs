@@ -12,7 +12,12 @@
  */
 
 import { parseArgs } from 'node:util';
-import postgres from 'postgres';
+import { createRequire } from 'node:module';
+
+// 'postgres' is a dependency of apps/api; resolve it through the api package's manifest
+// so the script runs from any workspace layout (checkout or container).
+const requireFromApi = createRequire(new URL('../apps/api/package.json', import.meta.url));
+const postgres = requireFromApi('postgres');
 
 const { values } = parseArgs({
   options: {
@@ -71,8 +76,9 @@ async function main() {
     `;
     await tx`
       INSERT INTO policies (organization_id, max_instruction_amount_cents, max_batch_total_cents,
-        max_batch_instructions, high_value_threshold_cents, cooling_off_seconds, blocking_risk_band)
-      VALUES (${orgId}, 25000000, 5000000000, 5000, 500000000, 300, 'CRITICAL')
+        max_batch_instructions, high_value_threshold_cents, cooling_off_seconds, blocking_risk_band,
+        max_export_rows)
+      VALUES (${orgId}, 25000000, 5000000000, 5000, 500000000, 300, 'CRITICAL', 50000)
     `;
     await tx`
       INSERT INTO users (id, organization_id, email, full_name, authority_level, status,
