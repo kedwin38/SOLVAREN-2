@@ -93,11 +93,21 @@ export function BatchesPage({ capabilities, level, onReleased, onViewTransaction
         title="Payment batches"
         subtitle="Prepare, review, authorize and monitor disbursements"
         actions={
-          capabilities['batch:create'] && (
-            <button className="button" data-variant="primary" onClick={() => setCreateOpen(true)}>
-              New batch
-            </button>
-          )
+          <>
+            <a
+              className="button"
+              href="/templates/solvaren-batch-template.csv"
+              download="solvaren-batch-template.csv"
+              title="Official upload template: recipient name, phone, amount (whole shillings), department, reference, remarks"
+            >
+              Download CSV template
+            </a>
+            {capabilities['batch:create'] && (
+              <button className="button" data-variant="primary" onClick={() => setCreateOpen(true)}>
+                New batch
+              </button>
+            )}
+          </>
         }
       />
 
@@ -122,7 +132,7 @@ export function BatchesPage({ capabilities, level, onReleased, onViewTransaction
             title="No batches"
             hint={
               capabilities['batch:create']
-                ? 'Create a batch and upload a CSV of recipients and amounts to begin.'
+                ? 'Create a batch, download the CSV template above, fill in recipients and amounts, then upload it.'
                 : 'Batches created by Payment Operations will appear here.'
             }
           />
