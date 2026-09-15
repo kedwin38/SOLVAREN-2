@@ -153,7 +153,68 @@ export function Login({ onAuthenticated }: { onAuthenticated: (session: SessionR
 
   return (
     <div className="login-shell">
-      <div className="login-card">
+      <aside className="login-brand" aria-hidden="true">
+        <div className="login-brand-head">
+          <svg width="34" height="34" viewBox="0 0 32 32">
+            <rect x="1" y="1" width="30" height="30" rx="8" fill="#0f766e" />
+            <path d="M10 20.5 L16 12.5 L22 20.5" fill="none" stroke="#ffffff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M10 25 L22 25" stroke="#ffffff" strokeWidth="2.4" strokeLinecap="round" opacity="0.55" />
+          </svg>
+          <span className="login-brand-wordmark">SOLVAREN</span>
+        </div>
+
+        <div className="login-brand-body">
+          <h1 className="login-brand-headline">Move money with certainty.</h1>
+          <p className="login-brand-sub">
+            Disbursement orchestration for organizations that pay at scale — governed,
+            observable, and reconciled to the last shilling on M-PESA Daraja.
+          </p>
+          <div className="login-trust">
+            <div className="login-trust-item">
+              <span className="login-trust-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 3.5 5 6v5c0 4.5 3 7.8 7 9.5 4-1.7 7-5 7-9.5V6l-7-2.5Z" />
+                  <path d="m9 11.5 2.2 2.2 4-4.2" />
+                </svg>
+              </span>
+              <div>
+                <div className="login-trust-title">Passkey-native access</div>
+                <div className="login-trust-copy">FIDO2 hardware-rooted sign-in. No SMS codes, no shared secrets.</div>
+              </div>
+            </div>
+            <div className="login-trust-item">
+              <span className="login-trust-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="4.5" y="10.5" width="15" height="9.5" rx="2" />
+                  <path d="M8 10.5V7.8a4 4 0 0 1 8 0v2.7" />
+                  <path d="M12 14.5v2" />
+                </svg>
+              </span>
+              <div>
+                <div className="login-trust-title">Envelope-encrypted credentials</div>
+                <div className="login-trust-copy">Provider secrets sealed with AES-GCM and domain-separated keys.</div>
+              </div>
+            </div>
+            <div className="login-trust-item">
+              <span className="login-trust-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 4.5h14M7 4.5v13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-13" />
+                  <path d="M10 9.5v6M14 9.5v6" />
+                </svg>
+              </span>
+              <div>
+                <div className="login-trust-title">Immutable audit ledger</div>
+                <div className="login-trust-copy">Every release ceremony recorded; history cannot be rewritten.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="login-fineprint">SOLVAREN Payment Solutions · Authorized officers only · All activity is audited</div>
+      </aside>
+
+      <div className="login-form-pane">
+        <div className="login-card">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
           <svg width="36" height="36" viewBox="0 0 32 32" aria-hidden="true">
             <rect x="1" y="1" width="30" height="30" rx="8" fill="var(--accent)" />
@@ -293,6 +354,7 @@ export function Login({ onAuthenticated }: { onAuthenticated: (session: SessionR
               </button>
             </form>
           ))}
+        </div>
       </div>
     </div>
   );
