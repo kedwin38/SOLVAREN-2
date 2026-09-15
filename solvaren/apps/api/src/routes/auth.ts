@@ -11,9 +11,11 @@
  * §7.3): the password stage returns a short-lived challenge ticket and *no session*, so
  * a stolen password alone yields nothing that can read financial data.
  *
- * The step-up endpoint (spec §8.2) is the relief valve for the five-minute freshness
- * gate: password + WebAuthn re-verification refreshes `sessions.authenticated_at`
- * in place, so a release ceremony never requires a full logout-and-login.
+ * The step-up endpoints (spec §8.2) are the relief valve for the five-minute freshness
+ * gate: a passkey assertion over a server-held challenge refreshes
+ * `sessions.authenticated_at` (and `webauthn_verified_at`) in place, so a privileged
+ * operation mid-session is confirmed with the passkey alone — never a logout-and-login,
+ * and never a password: the phishing-resistant factor replaces the phishable one.
  */
 
 import { Hono } from 'hono';
@@ -52,7 +54,7 @@ import { requireAuth, actorOf, limitBodySize, rateLimit } from '../middleware/se
 import { withConnection, inTransaction } from '../db/client.js';
 import { writeAuditEvent } from '../db/audit-writer.js';
 import { loadEffectiveMatrix } from '../services/permissions.js';
-import type { AppContext, Env } from '../env.js';
+import type { AppContext } from '../env.js';
 
 /** The transports a credential may declare (matches @simplewebauthn/types locally). */
 type Transport = 'ble' | 'cable' | 'hybrid' | 'internal' | 'nfc' | 'smart-card' | 'usb';
@@ -390,17 +392,74 @@ authRoutes.post('/webauthn/authenticate', async (c) => {
 // ---------------------------------------------------------------------------
 
 const stepUpSchema = z.object({
-  password: z.string().min(1).max(1024),
-  webauthnResponse: z.record(z.unknown()).optional(),
+  ticket: z.string().min(16).max(64),
+  response: z.record(z.unknown()),
 });
 
 /**
- * POST /api/auth/step-up — refresh the session's authenticated_at.
+ * POST /api/auth/step-up/options — begin a passkey step-up.
  *
- * Requires the password AND, for L2/L3 (the only levels that can act on a fresh-auth
- * gate), a WebAuthn assertion over a fresh challenge. On success the existing session's
- * freshness timestamp advances, without issuing a new token — so all other tabs keep
- * working and the audit trail shows one continuous session stepping up.
+ * The challenge is held server-side under a single-use ticket, exactly like the sign-in
+ * ceremony: the client never invents a challenge, and the ticket cannot be replayed.
+ */
+authRoutes.post(
+  '/step-up/options',
+  requireAuth,
+  rateLimit('actor', { ratePerSecond: 0.2, burst: 10 }),
+  async (c) => {
+    const actor = actorOf(c);
+    const security = c.get('securityContext');
+
+    const issued = await withConnection(c.env, async (sql) => {
+      const credentials = await sql<{ credential_id: string; transports: string[] }[]>`
+        SELECT credential_id, transports FROM webauthn_credentials
+         WHERE user_id = ${actor.userId} AND status = 'ACTIVE'
+      `;
+      if (credentials.length === 0) {
+        throw authenticationError(
+          'WEBAUTHN_CREDENTIAL_NONE',
+          'Your account has no security key enrolled. Sign out and sign in again to enrol one.',
+        );
+      }
+
+      const options = await generateAuthenticationOptions({
+        rpID: c.env.WEBAUTHN_RP_ID,
+        userVerification: 'required',
+        allowCredentials: credentials.map((cred) => ({
+          id: cred.credential_id,
+          transports: cred.transports as Transport[],
+        })),
+      });
+
+      const ticket = randomToken(32);
+      await sql`
+        INSERT INTO security_events (organization_id, user_id, event_type, severity, description, ip, detail)
+        VALUES (${actor.organizationId}, ${actor.userId}, 'WEBAUTHN_STEPUP_CHALLENGE_ISSUED', 'INFO',
+                ${'A step-up WebAuthn challenge was issued'}, ${security.ip},
+                ${sql.json({ challenge: options.challenge, ticket })})
+      `;
+      return { options, ticket };
+    });
+
+    return c.json({
+      ticket: issued.ticket,
+      challenge: issued.options.challenge,
+      rpId: c.env.WEBAUTHN_RP_ID,
+      allowCredentials: issued.options.allowCredentials,
+      timeout: 120_000,
+    });
+  },
+);
+
+/**
+ * POST /api/auth/step-up — complete a passkey step-up.
+ *
+ * A WebAuthn assertion with user verification IS the identity confirmation — possession
+ * of the registered key plus its own biometric/PIN gate. Step-up no longer requires (or
+ * accepts) a password: the phishing-resistant factor replaces the phishable one, and the
+ * officer confirms the operation with the passkey they already have. On success the
+ * existing session's `authenticated_at` AND `webauthn_verified_at` advance in place —
+ * other tabs keep working, and the audit trail shows one continuous session stepping up.
  */
 authRoutes.post('/step-up', requireAuth, rateLimit('actor', { ratePerSecond: 0.1, burst: 5 }), async (c) => {
   const actor = actorOf(c);
@@ -409,69 +468,97 @@ authRoutes.post('/step-up', requireAuth, rateLimit('actor', { ratePerSecond: 0.1
   const security = c.get('securityContext');
 
   const outcome = await withConnection(c.env, async (sql) => {
-    const users = await sql<UserRow[]>`
-      SELECT id, organization_id, email, full_name, authority_level, status, password_hash,
-             authorization_pin_hash, failed_login_count, locked_until
-        FROM users WHERE id = ${actor.userId} LIMIT 1
+    const events = await sql<{ id: string; detail: { challenge: string } }[]>`
+      SELECT id, detail FROM security_events
+       WHERE event_type = 'WEBAUTHN_STEPUP_CHALLENGE_ISSUED'
+         AND user_id = ${actor.userId}
+         AND detail->>'ticket' = ${body.ticket}
+         AND created_at > now() - interval '5 minutes'
+       ORDER BY created_at DESC
+       LIMIT 1
     `;
-    const user = users[0];
-    if (!user || !(await verifyPassword(body.password, user.password_hash))) {
-      await inTransaction(sql, (tx) =>
-        writeAuditEvent(tx, {
-          organizationId: actor.organizationId,
-          actorId: actor.userId,
-          actorLevel: actor.level,
-          eventClass: 'SECURITY',
-          action: 'auth.step_up.denied',
-          objectType: 'Session',
-          objectId: actor.sessionId,
-          outcome: 'DENIED',
-          correlationId,
-          securityContext: security,
-          detail: { reason: 'password' },
-        }),
+    const pending = events[0];
+    if (!pending) {
+      throw authenticationError(
+        'STEPUP_CHALLENGE_EXPIRED',
+        'That confirmation expired. Run the action again and confirm with your passkey.',
       );
-      throw authenticationError('PASSWORD_INCORRECT', 'Your password was not correct');
     }
 
-    // L1 sessions may step up with the password alone; privileged levels must re-touch
-    // the authenticator.
-    if (user.authority_level !== 'L1') {
-      if (!body.webauthnResponse) {
-        throw authenticationError(
-          'WEBAUTHN_REQUIRED',
-          'Confirming your identity requires your security key. Complete the passkey prompt and try again.',
-        );
-      }
-      const verified = await verifyStepUpAssertion(
-        sql,
-        c.env,
-        user.id,
-        body.webauthnResponse as Record<string, unknown> & { id?: string },
+    const response = body.response as Record<string, unknown> & { id?: string };
+    const credentialId = typeof response.id === 'string' ? response.id : '';
+    const credentials = await sql<
+      { id: string; credential_id: string; public_key: Uint8Array; signature_counter: string; transports: string[] }[]
+    >`
+      SELECT id, credential_id, public_key, signature_counter, transports
+        FROM webauthn_credentials
+       WHERE user_id = ${actor.userId} AND credential_id = ${credentialId} AND status = 'ACTIVE'
+       LIMIT 1
+    `;
+    const credential = credentials[0];
+    if (!credential) {
+      throw authenticationError(
+        'WEBAUTHN_CREDENTIAL_UNKNOWN',
+        'That authenticator is not registered to this account',
       );
-      if (!verified) {
-        await inTransaction(sql, (tx) =>
-          writeAuditEvent(tx, {
-            organizationId: actor.organizationId,
-            actorId: actor.userId,
-            actorLevel: actor.level,
-            eventClass: 'SECURITY',
-            action: 'auth.step_up.denied',
-            objectType: 'Session',
-            objectId: actor.sessionId,
-            outcome: 'DENIED',
-            correlationId,
-            securityContext: security,
-            detail: { reason: 'webauthn' },
-          }),
-        );
-        throw authenticationError('WEBAUTHN_VERIFICATION_FAILED', 'The security key verification failed');
-      }
     }
 
+    let verification;
+    try {
+      verification = await verifyAuthenticationResponse({
+        response: body.response as never,
+        expectedChallenge: pending.detail.challenge,
+        expectedOrigin: c.env.APP_ORIGIN,
+        expectedRPID: c.env.WEBAUTHN_RP_ID,
+        requireUserVerification: true,
+        authenticator: {
+          credentialID: credential.credential_id,
+          credentialPublicKey: new Uint8Array(credential.public_key),
+          counter: Number(credential.signature_counter),
+          transports: credential.transports as Transport[],
+        },
+      });
+    } catch (err) {
+      await sql`
+        INSERT INTO security_events (organization_id, user_id, event_type, severity, description, ip, detail)
+        VALUES (${actor.organizationId}, ${actor.userId}, 'WEBAUTHN_VERIFICATION_FAILED', 'WARNING',
+                ${'A step-up WebAuthn assertion failed verification'}, ${security.ip},
+                ${sql.json({ scope: 'step-up', error: err instanceof Error ? err.message : 'unknown' })})
+      `;
+      throw authenticationError('WEBAUTHN_VERIFICATION_FAILED', 'The security key verification failed');
+    }
+
+    if (!verification.verified) {
+      throw authenticationError('WEBAUTHN_VERIFICATION_FAILED', 'The security key verification failed');
+    }
+
+    // Cloned-authenticator detection, identical to the sign-in ceremony.
+    const newCounter = verification.authenticationInfo.newCounter;
+    const storedCounter = Number(credential.signature_counter);
+    if (newCounter !== 0 && newCounter <= storedCounter) {
+      await sql`
+        INSERT INTO security_events (organization_id, user_id, event_type, severity, description, ip, detail)
+        VALUES (${actor.organizationId}, ${actor.userId}, 'WEBAUTHN_COUNTER_REGRESSION', 'CRITICAL',
+                ${'An authenticator signature counter did not advance, which can indicate a cloned key'},
+                ${security.ip}, ${sql.json({ scope: 'step-up', storedCounter, newCounter })})
+      `;
+      throw authenticationError(
+        'WEBAUTHN_COUNTER_REGRESSION',
+        'This security key failed an integrity check and cannot be used. Contact your administrator.',
+      );
+    }
+
+    // Burn the ticket so it cannot be reused, advance the key counter, and refresh the
+    // session in place.
+    await sql`UPDATE security_events SET detail = detail - 'ticket' WHERE id = ${pending.id}`;
+    await sql`
+      UPDATE webauthn_credentials
+         SET signature_counter = ${newCounter}, last_used_at = now()
+       WHERE id = ${credential.id}
+    `;
     await sql`
       UPDATE sessions
-         SET authenticated_at = now()
+         SET authenticated_at = now(), webauthn_verified_at = now()
        WHERE id = ${actor.sessionId} AND revoked_at IS NULL
     `;
 
@@ -487,7 +574,7 @@ authRoutes.post('/step-up', requireAuth, rateLimit('actor', { ratePerSecond: 0.1
         outcome: 'SUCCESS',
         correlationId,
         securityContext: security,
-        detail: { level: actor.level },
+        detail: { method: 'webauthn', credentialId: credential.id, level: actor.level },
       }),
     );
 
@@ -496,70 +583,6 @@ authRoutes.post('/step-up', requireAuth, rateLimit('actor', { ratePerSecond: 0.1
 
   return c.json(outcome);
 });
-
-/** Generate + verify a one-shot step-up WebAuthn challenge inside one request cycle. */
-async function verifyStepUpAssertion(
-  sql: Parameters<Parameters<typeof withConnection>[1]>[0],
-  env: Env,
-  userId: string,
-  response: Record<string, unknown> & { id?: string },
-): Promise<boolean> {
-  const credentials = await sql<{ credential_id: string; transports: string[] }[]>`
-    SELECT credential_id, transports FROM webauthn_credentials
-     WHERE user_id = ${userId} AND status = 'ACTIVE'
-  `;
-  if (credentials.length === 0) return false;
-
-  const options = await generateAuthenticationOptions({
-    rpID: env.WEBAUTHN_RP_ID,
-    userVerification: 'required',
-    allowCredentials: credentials.map((cred) => ({
-      id: cred.credential_id,
-      transports: cred.transports as Transport[],
-    })),
-  });
-  const expectedChallenge = options.challenge;
-
-  const credentialId = typeof response.id === 'string' ? response.id : '';
-  const rows = await sql<
-    { id: string; credential_id: string; public_key: Uint8Array; signature_counter: string; transports: string[] }[]
-  >`
-    SELECT id, credential_id, public_key, signature_counter, transports
-      FROM webauthn_credentials
-     WHERE user_id = ${userId} AND credential_id = ${credentialId} AND status = 'ACTIVE'
-     LIMIT 1
-  `;
-  const credential = rows[0];
-  if (!credential) return false;
-
-  try {
-    const verification = await verifyAuthenticationResponse({
-      response: response as never,
-      expectedChallenge,
-      expectedOrigin: env.APP_ORIGIN,
-      expectedRPID: env.WEBAUTHN_RP_ID,
-      requireUserVerification: true,
-      authenticator: {
-        credentialID: credential.credential_id,
-        credentialPublicKey: new Uint8Array(credential.public_key),
-        counter: Number(credential.signature_counter),
-        transports: credential.transports as Transport[],
-      },
-    });
-    if (!verification.verified) return false;
-    const newCounter = verification.authenticationInfo.newCounter;
-    const stored = Number(credential.signature_counter);
-    if (newCounter !== 0 && newCounter <= stored) return false; // cloned key — refuse
-    await sql`
-      UPDATE webauthn_credentials
-         SET signature_counter = ${newCounter}, last_used_at = now()
-       WHERE id = ${credential.id}
-    `;
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // WebAuthn enrolment

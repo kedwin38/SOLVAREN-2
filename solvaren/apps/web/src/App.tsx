@@ -10,12 +10,13 @@
  * endpoint re-checks authority server-side against the live matrix (spec §4 HARD CONTROL).
  */
 
-import { useCallback, useEffect, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { LEVEL_TITLES, type TxnState } from '@solvaren/core';
 import {
   api,
   ApiError,
   setSessionToken,
+  setStepUpHandler,
   requestWebAuthnAssertion,
   type SessionResponse,
 } from './lib/api.js';
@@ -31,7 +32,7 @@ import { BackupsPage } from './pages/Backups.js';
 import { UsersPage } from './pages/Users.js';
 import { ReconciliationPage } from './pages/Reconciliation.js';
 import { ReportsPage } from './pages/Reports.js';
-import { Notice } from './components/primitives.js';
+import { Modal, Notice } from './components/primitives.js';
 
 export type Route =
   | 'dashboard'
@@ -191,11 +192,25 @@ export function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(
     (document.documentElement.dataset.theme as 'light' | 'dark') ?? 'light',
   );
+  // Global passkey step-up: one pending confirmation at a time, resolved by the dialog.
+  const [stepUpResolver, setStepUpResolver] = useState<((confirmed: boolean) => void) | null>(null);
 
   useEffect(() => {
     const onHashChange = () => setRoute(readRoute());
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  // Register the step-up provider: any privileged operation refused for a stale session
+  // surfaces here as a single passkey prompt, then the operation retries in place.
+  useEffect(() => {
+    setStepUpHandler(
+      () =>
+        new Promise<boolean>((resolve) => {
+          setStepUpResolver(() => resolve);
+        }),
+    );
+    return () => setStepUpHandler(null);
   }, []);
 
   // Poll unread notifications while signed in (spec §13.7 visible operational warnings).
@@ -426,7 +441,107 @@ export function App() {
         )}
         {route === 'users' && <UsersPage />}
       </main>
+
+      {stepUpResolver && (
+        <PasskeyConfirm
+          onSettled={(confirmed) => {
+            stepUpResolver(confirmed);
+            setStepUpResolver(null);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * The global passkey confirmation (step-up) dialog.
+ *
+ * Opened automatically whenever a privileged operation needs identity fresher than the
+ * session carries: fetch the challenge, raise the platform passkey prompt, verify, and
+ * the blocked operation retries itself. The officer confirms with the key they already
+ * have — no password, no re-login.
+ */
+function PasskeyConfirm({ onSettled }: { onSettled: (confirmed: boolean) => void }) {
+  const [phase, setPhase] = useState<'prompting' | 'failed'>('prompting');
+  const [message, setMessage] = useState<string | null>(null);
+  const settled = useRef(false);
+
+  const run = useCallback(() => {
+    setPhase('prompting');
+    setMessage(null);
+    void (async () => {
+      try {
+        const options = await api.auth.stepUpOptions();
+        const assertion = await requestWebAuthnAssertion(options);
+        await api.auth.stepUp(options.ticket, assertion);
+        if (!settled.current) {
+          settled.current = true;
+          onSettled(true);
+        }
+      } catch (err) {
+        if (settled.current) return;
+        if (err instanceof ApiError && err.code === 'WEBAUTHN_UNSUPPORTED') {
+          setMessage(err.message);
+          setPhase('failed');
+          return;
+        }
+        setMessage(
+          err instanceof Error && err.name === 'NotAllowedError'
+            ? 'The passkey prompt was dismissed or timed out. No action has been taken.'
+            : err instanceof ApiError
+              ? err.message
+              : 'The confirmation could not be completed.',
+        );
+        setPhase('failed');
+      }
+    })();
+  }, [onSettled]);
+
+  useEffect(() => {
+    run();
+  }, [run]);
+
+  function finish(confirmed: boolean) {
+    if (!settled.current) {
+      settled.current = true;
+      onSettled(confirmed);
+    }
+  }
+
+  return (
+    <Modal open onClose={() => finish(false)} labelledBy="passkey-confirm-title" dismissible={false}>
+      <div style={{ display: 'grid', gap: 'var(--s4)', minWidth: 'min(420px, 84vw)' }}>
+        <div>
+          <h2 id="passkey-confirm-title" style={{ margin: 0 }}>
+            Confirm with your passkey
+          </h2>
+          <p className="muted" style={{ margin: '0.5rem 0 0' }}>
+            {phase === 'prompting'
+              ? 'This operation requires a fresh identity confirmation. Complete the passkey prompt to continue — your session stays exactly as it is.'
+              : 'The confirmation did not complete. The operation was not performed.'}
+          </p>
+        </div>
+        {phase === 'prompting' && (
+          <div className="loading" role="status">
+            Waiting for your security key…
+          </div>
+        )}
+        {phase === 'failed' && (
+          <>
+            {message && <Notice tone="warning">{message}</Notice>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="button" data-variant="ghost" onClick={() => finish(false)}>
+                Cancel the operation
+              </button>
+              <button className="button" data-variant="primary" onClick={run}>
+                Try again
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -441,22 +556,6 @@ function sessionTokenHeld(): boolean {
     return window.history.state?.solvarenSession === true;
   } catch {
     return false;
-  }
-}
-
-/** Global escape hatch for the step-up flow: any page can trigger the password prompt. */
-export async function performStepUp(password: string): Promise<void> {
-  try {
-    await api.auth.stepUp(password);
-  } catch (err) {
-    if (err instanceof ApiError && err.code === 'WEBAUTHN_REQUIRED') {
-      // Privileged step-up needs the security key too: generate + verify in one cycle.
-      // The server issues options only after the password checks out, so the flow is:
-      // rethrow a friendly instruction and let the caller prompt for WebAuthn via
-      // api.auth.stepUp with the assertion.
-      throw err;
-    }
-    throw err;
   }
 }
 

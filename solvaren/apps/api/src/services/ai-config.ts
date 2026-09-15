@@ -83,6 +83,21 @@ export async function resolveAiProvider(env: Env, organizationId: string): Promi
   };
 }
 
+/**
+ * Endpoint URL for the configured provider, tolerant of how the administrator writes
+ * the base URL. Both `https://api.anthropic.com` and `https://api.anthropic.com/v1`
+ * work for Anthropic; `https://api.openai.com`, `/v1`, Groq's `/openai/v1`, OpenRouter's
+ * `/api/v1` and self-hosted `/v1` bases all work for OpenAI-compatible endpoints.
+ */
+export function providerEndpoint(baseUrl: string, provider: AiProvider): string {
+  const base = baseUrl.replace(/\/+$/, '');
+  const hasV1 = /\/v1$/.test(base);
+  if (provider === 'anthropic') {
+    return hasV1 ? `${base}/messages` : `${base}/v1/messages`;
+  }
+  return hasV1 ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+}
+
 /** One bounded completion against the configured provider. No tools, no callbacks. */
 export async function callAiProvider(
   config: AiProviderConfig,
@@ -96,12 +111,12 @@ export async function callAiProvider(
   const started = Date.now();
 
   try {
-    let url: string;
+    const url = providerEndpoint(config.baseUrl, config.provider);
     let headers: Record<string, string>;
-    let body: unknown;
+    let body: Record<string, unknown>;
 
     if (config.provider === 'anthropic') {
-      url = `${config.baseUrl}/v1/messages`;
+      // Anthropic Messages API: key header + version header; max_tokens is REQUIRED.
       headers = {
         'x-api-key': config.apiKey,
         'anthropic-version': '2023-06-01',
@@ -114,14 +129,16 @@ export async function callAiProvider(
         messages: [{ role: 'user', content: userPrompt }],
       };
     } else {
-      url = `${config.baseUrl}/chat/completions`;
+      // OpenAI-compatible Chat Completions: Bearer auth, system prompt as a message.
+      // max_tokens is deliberately omitted: newer OpenAI models reject it in favour of
+      // max_completion_tokens, other compatible servers reject that instead, and every
+      // server applies its own default cap — the omission is the only portable choice.
       headers = {
         Authorization: `Bearer ${config.apiKey}`,
         'content-type': 'application/json',
       };
       body = {
         model: config.model,
-        max_tokens: maxTokens,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },

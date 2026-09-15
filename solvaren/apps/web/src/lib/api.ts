@@ -84,6 +84,32 @@ export function hasSession(): boolean {
   return sessionToken !== null;
 }
 
+/**
+ * Global passkey step-up (spec §8.2), wired by App.
+ *
+ * When a privileged operation hits the freshness gate, the request layer runs the
+ * registered handler — App shows the passkey prompt, performs the ceremony and returns
+ * whether identity was confirmed. If it was, the original request is retried once,
+ * transparently to the calling page: the operator confirms with their passkey and the
+ * operation completes. No logout, no re-login, no password.
+ */
+let stepUpHandler: (() => Promise<boolean>) | null = null;
+let stepUpInFlight: Promise<boolean> | null = null;
+
+export function setStepUpHandler(handler: (() => Promise<boolean>) | null): void {
+  stepUpHandler = handler;
+}
+
+async function runStepUp(): Promise<boolean> {
+  if (!stepUpHandler) return false;
+  if (!stepUpInFlight) {
+    stepUpInFlight = stepUpHandler().finally(() => {
+      stepUpInFlight = null;
+    });
+  }
+  return stepUpInFlight;
+}
+
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
@@ -101,18 +127,55 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
   if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: options.method ?? 'GET',
-    headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    signal: options.signal,
-    // The token travels in a header, so no cookies and therefore no CSRF surface.
-    credentials: 'omit',
-  });
+  const doFetch = () =>
+    fetch(`${API_BASE}${path}`, {
+      method: options.method ?? 'GET',
+      headers,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: options.signal,
+      // The token travels in a header, so no cookies and therefore no CSRF surface.
+      credentials: 'omit',
+    });
+
+  let response = await doFetch();
+
+  // A freshness-gated operation (or one that needs a WebAuthn-verified session) is
+  // rescued inline: confirm with the passkey, then retry once. The step-up endpoints
+  // themselves never trigger this — they are how the handler fulfils it.
+  if (
+    response.status === 401 &&
+    !path.startsWith('/auth/step-up') &&
+    stepUpHandler !== null
+  ) {
+    const text = await response.text();
+    let payload: unknown = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+    const code = (payload as { error?: ApiErrorShape } | null)?.error?.code;
+    if (code === 'STEP_UP_REQUIRED' || code === 'WEBAUTHN_REQUIRED') {
+      if (await runStepUp()) {
+        response = await doFetch();
+        return consumeResponse<T>(response);
+      }
+    }
+    // Cancelled or failed step-up: fall through so the original error reaches the caller.
+    return consumeResponseFromText<T>(response.status, text);
+  }
 
   if (response.status === 204) return undefined as T;
 
-  const text = await response.text();
+  return consumeResponse<T>(response);
+}
+
+async function consumeResponse<T>(response: Response): Promise<T> {
+  if (response.status === 204) return undefined as T;
+  return consumeResponseFromText<T>(response.status, await response.text());
+}
+
+async function consumeResponseFromText<T>(status: number, text: string): Promise<T> {
   let payload: unknown = null;
   try {
     payload = text ? JSON.parse(text) : null;
@@ -120,14 +183,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     payload = null;
   }
 
-  if (!response.ok) {
+  if (status < 200 || status >= 300) {
     const shape = (payload as { error?: ApiErrorShape } | null)?.error;
     throw new ApiError(
-      response.status,
+      status,
       shape ?? {
         code: 'UNEXPECTED_RESPONSE',
         category: 'INTERNAL',
-        message: `The server returned ${response.status}.`,
+        message: `The server returned ${status}.`,
       },
     );
   }
@@ -426,11 +489,18 @@ export const api = {
         body: { ticket, response, deviceId: deviceId() },
       }),
 
-    /** Step-up: refresh the session's authenticated_at (the relief valve for the 5-minute gate). */
-    stepUp: (password: string, webauthnResponse?: unknown) =>
+    /** Step-up, phase 1: fetch a passkey challenge bound to this session. */
+    stepUpOptions: () =>
+      request<MinimalWebAuthnOptions & { ticket: string }>('/auth/step-up/options', {
+        method: 'POST',
+        body: {},
+      }),
+
+    /** Step-up, phase 2: confirm with the passkey assertion; refreshes the session in place. */
+    stepUp: (ticket: string, response: unknown) =>
       request<{ steppedUp: boolean; authenticatedAt: string }>('/auth/step-up', {
         method: 'POST',
-        body: { password, ...(webauthnResponse ? { webauthnResponse } : {}) },
+        body: { ticket, response },
       }),
 
     webauthnRegisterOptions: () =>
@@ -885,7 +955,7 @@ export async function requestWebAuthnAssertion(options: MinimalWebAuthnOptions):
       rpId: options.rpId,
       allowCredentials: (options.allowCredentials ?? []).map((c) => ({
         id: base64UrlToBuffer(c.id),
-        type: c.type,
+        type: c.type ?? 'public-key',
       })),
       userVerification: 'required',
       timeout: options.timeout ?? 120_000,

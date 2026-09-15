@@ -33,7 +33,7 @@ import {
   requireExactLevel,
   actorOf,
 } from '../middleware/security.js';
-import { withConnection, inTransaction } from '../db/client.js';
+import { withConnection, inTransaction, textArrayParam } from '../db/client.js';
 import { writeAuditEvent } from '../db/audit-writer.js';
 import {
   configureDaraja,
@@ -1789,7 +1789,7 @@ adminRoutes.patch(
             ${merged.maxBatchInstructions}, ${merged.highValueThresholdCents}, ${merged.coolingOffSeconds},
             ${merged.blockingRiskBand}, ${merged.allowL1FailedExport}, ${merged.allowL1Retry},
             ${merged.maxExportRows}, ${merged.dailyDisbursementCeilingCents},
-            ${merged.releaseCutoffLocalTime}, ${tx.array(merged.holidayDates)}, ${actor.userId}
+            ${merged.releaseCutoffLocalTime}, ${textArrayParam(tx, merged.holidayDates)}, ${actor.userId}
           )
           ON CONFLICT (organization_id) DO UPDATE SET
             max_instruction_amount_cents = EXCLUDED.max_instruction_amount_cents,

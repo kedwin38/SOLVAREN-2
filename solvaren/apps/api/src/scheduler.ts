@@ -22,6 +22,7 @@
  */
 
 import { correlationId, nextRun } from '@solvaren/core';
+import { uuidSet } from './db/client.js';
 import type { Sql } from './db/client.js';
 import type { Env } from './env.js';
 
@@ -422,7 +423,7 @@ export async function runHousekeeping(env: Env, correlation: string): Promise<vo
          WHERE state = 'AUTHORIZATION_PENDING'
            AND id IN (
              SELECT batch_id FROM authorization_challenges
-              WHERE id = ANY(${sql.array(abandoned.map((a) => a.id))})
+              WHERE id = ANY(${uuidSet(sql, abandoned.map((a) => a.id))})
            )
       `;
     }

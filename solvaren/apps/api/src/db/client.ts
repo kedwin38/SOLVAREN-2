@@ -44,11 +44,34 @@ export async function requireLock(tx: Sql, kind: 'batch' | 'instruction' | 'tran
   await tx`SELECT pg_advisory_xact_lock(hashtext(${`${kind}:${id}`}))`;
 }
 
-/** Set helper: build a Postgres array parameter from a list of UUIDs. */
-export function uuidSet(sql: Sql, ids: readonly string[]): postgres.Parameter {
-  return sql.array([...ids] as (string | number)[]) as unknown as postgres.Parameter;
+/**
+ * Array binding, the deterministic way.
+ *
+ * The driver's sql.array() relies on type introspection to serialise arrays; with
+ * fetch_types disabled it emits an empty string for an empty list, which Postgres
+ * rejects as "malformed array literal". Binding the array *literal* as a plain text
+ * parameter with an explicit cast is immune: the value travels as data (no injection
+ * surface), and '{ }' casts cleanly for empty and populated lists alike.
+ */
+function arrayLiteralValue(values: readonly (string | number)[]): string {
+  return `{${values
+    .map((v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`)
+    .join(',')}}`;
 }
 
-export function uuidArrayValue(tx: Sql, ids: readonly string[]): postgres.Parameter {
-  return tx.array([...ids]) as unknown as postgres.Parameter;
+/** Any postgres sql template tag — pool or transaction; only the tagged-template call is needed. */
+type TemplateSql = (strings: TemplateStringsArray, ...values: unknown[]) => unknown;
+
+/** Set helper: build a Postgres uuid[] parameter from a list of UUIDs. */
+export function uuidSet(sql: TemplateSql, ids: readonly string[]): postgres.Parameter {
+  return sql`${arrayLiteralValue(ids)}::uuid[]` as unknown as postgres.Parameter;
+}
+
+export function uuidArrayValue(tx: TemplateSql, ids: readonly string[]): postgres.Parameter {
+  return tx`${arrayLiteralValue(ids)}::uuid[]` as unknown as postgres.Parameter;
+}
+
+/** text[] parameter (policy holiday dates, credential transports, …). */
+export function textArrayParam(sql: TemplateSql, values: readonly string[]): postgres.Parameter {
+  return sql`${arrayLiteralValue(values)}::text[]` as unknown as postgres.Parameter;
 }

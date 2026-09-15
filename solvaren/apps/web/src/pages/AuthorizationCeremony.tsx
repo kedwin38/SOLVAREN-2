@@ -44,7 +44,6 @@ export function AuthorizationCeremony({ batchId, onClose, onReleased }: Props) {
   const [pin, setPin] = useState('');
   const [manifestConfirmed, setManifestConfirmed] = useState(false);
   const [secondsRemaining, setSecondsRemaining] = useState<number | null>(null);
-  const [stepUpOpen, setStepUpOpen] = useState(false);
 
   // ---- Open the ceremony ---------------------------------------------------
   useEffect(() => {
@@ -115,14 +114,9 @@ export function AuthorizationCeremony({ batchId, onClose, onReleased }: Props) {
         message: result.message,
       });
     } catch (err) {
+      // A stale-session refusal (STEP_UP_REQUIRED) never reaches here: the request layer
+      // runs the global passkey confirmation and retries the release automatically.
       if (err instanceof ApiError) {
-        // A stale session can be rescued inline: step up and retry once.
-        if (err.requiresStepUp) {
-          setStepUpOpen(true);
-          setPhase('review');
-          setError(err);
-          return;
-        }
         setError(err);
       } else if (err instanceof Error && err.name === 'NotAllowedError') {
         setError(
@@ -168,15 +162,7 @@ export function AuthorizationCeremony({ batchId, onClose, onReleased }: Props) {
 
   return (
     <Modal open onClose={abandon} labelledBy="ceremony-title" dismissible={!busy} wide>
-      {stepUpOpen && ceremony ? (
-        <StepUpPane
-          onDone={async () => {
-            setStepUpOpen(false);
-            setError(null);
-          }}
-          onCancel={() => setStepUpOpen(false)}
-        />
-      ) : phase === 'loading' ? (
+      {phase === 'loading' ? (
         <Loading label="Opening authorization ceremony" />
       ) : phase === 'error' && !ceremony ? (
         <div>
@@ -307,64 +293,5 @@ export function AuthorizationCeremony({ batchId, onClose, onReleased }: Props) {
         </div>
       ) : null}
     </Modal>
-  );
-}
-
-/**
- * Inline step-up: the session's five-minute freshness gate can be satisfied without a
- * full re-login. Password + (for L2/L3) a WebAuthn assertion refreshes authenticated_at.
- */
-function StepUpPane({ onDone, onCancel }: { onDone: () => Promise<void>; onCancel: () => void }) {
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<ApiError | null>(null);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      // First try password-only; the server tells us if WebAuthn is also required.
-      await api.auth.stepUp(password);
-      await onDone();
-    } catch (err) {
-      if (err instanceof ApiError && err.code === 'WEBAUTHN_REQUIRED') {
-        try {
-          // Privileged step-up needs the key: generate + verify in one server cycle.
-          await api.auth.stepUp(password, await requestWebAuthnAssertion({ challenge: '' }));
-          await onDone();
-          return;
-        } catch (inner) {
-          setError(inner instanceof ApiError ? inner : null);
-        }
-      } else {
-        setError(err instanceof ApiError ? err : null);
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div>
-      <h2>Confirm your identity</h2>
-      <p className="muted">
-        This action requires authentication fresher than five minutes. Confirming refreshes
-        your session in place — no sign-out needed.
-      </p>
-      {error && <Notice tone="danger">{error.message}</Notice>}
-      <form onSubmit={submit}>
-        <label className="field">
-          <span className="field-label">Password</span>
-          <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus required />
-        </label>
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button type="button" className="button" data-variant="ghost" onClick={onCancel}>Cancel</button>
-          <button type="submit" className="button" data-variant="primary" disabled={busy}>
-            {busy ? 'Confirming…' : 'Confirm identity'}
-          </button>
-        </div>
-      </form>
-    </div>
   );
 }

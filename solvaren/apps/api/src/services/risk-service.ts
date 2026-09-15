@@ -67,7 +67,7 @@ export async function assessBatch(
              first_paid_at, last_paid_at, recipient_created_at, payment_details_modified_at
         FROM recipient_payment_history
        WHERE organization_id = ${batch.organization_id}
-         AND recipient_id = ANY(${tx.array(recipientIds)})
+         AND recipient_id = ANY(${uuidArrayValue(tx, recipientIds)})
     `;
     for (const row of rows) {
       history.set(row.recipient_id, {
@@ -128,7 +128,7 @@ export async function assessBatch(
       SELECT department_id, mean_batch_total_cents, settled_batch_count
         FROM department_batch_baseline
        WHERE organization_id = ${batch.organization_id}
-         AND department_id = ANY(${tx.array(departmentIds)})
+         AND department_id = ANY(${uuidArrayValue(tx, departmentIds)})
     `;
     for (const row of rows) {
       baselines.set(row.department_id, {

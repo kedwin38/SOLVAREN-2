@@ -156,7 +156,20 @@ function AiConfigTab() {
             </label>
             <label className="field">
               <span className="field-label">Base URL (https)</span>
-              <input className="input mono" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} required />
+              <input
+                className="input mono"
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                required
+                placeholder="https://api.anthropic.com — with or without /v1"
+              />
+              <span className="field-hint">
+                Anthropic: <span className="mono">https://api.anthropic.com</span> · OpenAI:{' '}
+                <span className="mono">https://api.openai.com/v1</span> · Groq:{' '}
+                <span className="mono">https://api.groq.com/openai/v1</span> · OpenRouter:{' '}
+                <span className="mono">https://openrouter.ai/api/v1</span>. A trailing <span className="mono">/v1</span> is
+                detected either way.
+              </span>
             </label>
             <label className="field">
               <span className="field-label">Model</span>
