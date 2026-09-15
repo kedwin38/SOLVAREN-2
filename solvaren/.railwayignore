@@ -1,0 +1,8 @@
+# Keep the deployment tarball small — build happens in the container.
+node_modules/
+**/node_modules/
+**/dist/
+coverage/
+.local-secrets/
+*.log
+.DS_Store

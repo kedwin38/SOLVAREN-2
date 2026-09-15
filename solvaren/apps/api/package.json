@@ -1,0 +1,26 @@
+{
+  "name": "@solvaren/api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "node --watch --experimental-strip-types src/server.ts",
+    "start": "node --enable-source-maps dist/server.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@solvaren/core": "workspace:*",
+    "@solvaren/daraja": "workspace:*",
+    "@solvaren/storage": "workspace:*",
+    "@simplewebauthn/server": "^10.0.0",
+    "hash-wasm": "^4.11.0",
+    "hono": "^4.6.12",
+    "postgres": "^3.4.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

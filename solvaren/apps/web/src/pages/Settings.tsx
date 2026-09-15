@@ -1,0 +1,560 @@
+/**
+ * Settings (spec §22): Daraja configuration (L3-only surface, AC-16), organization
+ * policies, the dynamic permission engine (AC-17), batch templates and notification
+ * channels. Every L3 mutation here requires fresh auth + WebAuthn + FPAC PIN server-side.
+ */
+
+import { useEffect, useState } from 'react';
+import { api, ApiError } from '../lib/api.js';
+import { Card, Empty, ErrorPane, Loading, Notice, PageHeader, relativeTime } from '../components/primitives.js';
+
+export function SettingsPage() {
+  const [tab, setTab] = useState<'daraja' | 'policies' | 'permissions' | 'templates'>('daraja');
+  const [error, setError] = useState<ApiError | null>(null);
+
+  return (
+    <>
+      <PageHeader title="Settings" subtitle="Daraja integration, organization policies, permissions, scheduling" />
+
+      {error && <ErrorPane error={error} />}
+
+      <div className="filters" style={{ gap: 8 }}>
+        {(['daraja', 'policies', 'permissions', 'templates'] as const).map((t) => (
+          <button key={t} className="button button-sm" data-variant={tab === t ? 'primary' : 'ghost'} onClick={() => setTab(t)}>
+            {t === 'daraja' ? 'Daraja' : t === 'policies' ? 'Policies' : t === 'permissions' ? 'Permissions' : 'Templates'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'daraja' && <DarajaTab />}
+      {tab === 'policies' && <PoliciesTab />}
+      {tab === 'permissions' && <PermissionsTab />}
+      {tab === 'templates' && <TemplatesTab />}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Daraja
+// ---------------------------------------------------------------------------
+
+interface DarajaConfigView {
+  id: string;
+  environment: string;
+  shortCode: string;
+  initiatorName: string;
+  commandId: string;
+  consumerKeyMasked: string;
+  credentialVersion: number;
+  credentialRotatedAt: string | null;
+  status: string;
+  lastTestOk: boolean | null;
+  lastTestMessage: string | null;
+}
+
+function DarajaTab() {
+  const [configs, setConfigs] = useState<DarajaConfigView[] | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [configureOpen, setConfigureOpen] = useState(false);
+  const [callbackInfo, setCallbackInfo] = useState<{ secret: string; urls: { resultUrl: string } } | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const load = async () => {
+    try {
+      const data = (await api.admin.daraja.list()) as unknown as { configurations: DarajaConfigView[] };
+      setConfigs(data.configurations);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err : null);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, [reloadKey]);
+
+  return (
+    <>
+      {notice && <Notice tone="success">{notice}</Notice>}
+      {callbackInfo && (
+        <Notice tone="warning">
+          <div className="strong">Register these callback URLs on the Daraja portal now.</div>
+          <div className="mono small" style={{ marginTop: 4 }}>{callbackInfo.urls.resultUrl}</div>
+          <div className="small muted" style={{ marginTop: 4 }}>The secret is embedded in the URL and shown only this once. Register it, then run a connection test.</div>
+        </Notice>
+      )}
+
+      <Card
+        title="Daraja integration"
+        footer={
+          <button className="button" data-variant="primary" onClick={() => setConfigureOpen(true)}>
+            {configs && configs.length > 0 ? 'Rotate credentials' : 'Configure Daraja'}
+          </button>
+        }
+      >
+        {!configs ? (
+          <Loading />
+        ) : configs.length === 0 ? (
+          <Empty title="No Daraja configuration" hint="Configure the integration to enable payment execution." />
+        ) : (
+          configs.map((c) => (
+            <div key={c.id} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
+              <div>
+                <div className="small muted">Environment</div>
+                <div className="strong">{c.environment}</div>
+              </div>
+              <div>
+                <div className="small muted">Shortcode</div>
+                <div className="mono">{c.shortCode}</div>
+              </div>
+              <div>
+                <div className="small muted">Consumer key</div>
+                <div className="mono">{c.consumerKeyMasked}</div>
+              </div>
+              <div>
+                <div className="small muted">Credential version</div>
+                <div>v{c.credentialVersion} {c.credentialRotatedAt ? `· ${relativeTime(c.credentialRotatedAt)}` : ''}</div>
+              </div>
+              <div>
+                <div className="small muted">Status</div>
+                <span className="chip" data-tone={c.status === 'ENABLED' ? 'success' : c.status === 'ERROR' ? 'danger' : 'warning'}>
+                  {c.status}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                <button className="button button-sm" onClick={() => void api.admin.daraja.test(c.id).then((r) => setNotice(r.message)).then(() => setReloadKey((k) => k + 1)).catch((e) => setError(e instanceof ApiError ? e : null))}>
+                  Test
+                </button>
+                {c.status !== 'ENABLED' && c.lastTestOk && (
+                  <button className="button button-sm" data-variant="primary" onClick={() => void api.admin.daraja.enable(c.id).then(() => setReloadKey((k) => k + 1)).catch((e) => setError(e instanceof ApiError ? e : null))}>
+                    Enable
+                  </button>
+                )}
+                {c.status === 'ENABLED' && (
+                  <button
+                    className="button button-sm"
+                    data-variant="danger"
+                    onClick={() => {
+                      const reason = window.prompt('Reason for disabling the integration?');
+                      if (reason && reason.length >= 3) {
+                        void api.admin.daraja.disable(c.id, reason).then(() => setReloadKey((k) => k + 1)).catch((e) => setError(e instanceof ApiError ? e : null));
+                      }
+                    }}
+                  >
+                    Disable
+                  </button>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </Card>
+
+      {configureOpen && (
+        <ConfigureDarajaModal
+          onClose={() => setConfigureOpen(false)}
+          onConfigured={(info) => {
+            setConfigureOpen(false);
+            setCallbackInfo(info);
+            setReloadKey((k) => k + 1);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function ConfigureDarajaModal({ onClose, onConfigured }: { onClose: () => void; onConfigured: (info: { secret: string; urls: { resultUrl: string } }) => void }) {
+  const [environment, setEnvironment] = useState<'sandbox' | 'production'>('sandbox');
+  const [shortCode, setShortCode] = useState('');
+  const [initiatorName, setInitiatorName] = useState('');
+  const [consumerKey, setConsumerKey] = useState('');
+  const [consumerSecret, setConsumerSecret] = useState('');
+  const [initiatorPasswordOrCredential, setInitiatorPasswordOrCredential] = useState('');
+  const [mpesaCertificatePem, setMpesaCertificatePem] = useState('');
+  const [authorizationPin, setAuthorizationPin] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.admin.daraja.configure({
+        environment,
+        shortCode,
+        initiatorName,
+        consumerKey,
+        consumerSecret,
+        initiatorPasswordOrCredential,
+        ...(mpesaCertificatePem.trim() ? { mpesaCertificatePem: mpesaCertificatePem.trim() } : {}),
+        authorizationPin,
+      });
+      onConfigured({ secret: result.callbackSecret, urls: result.callbackUrls });
+    } catch (err) {
+      setError(err instanceof ApiError ? err : null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal modal-wide" role="dialog" aria-modal="true">
+        <h2>Configure Daraja {configsExistHint() ? '— credential rotation' : ''}</h2>
+        <p className="muted small">
+          Requires fresh authentication + WebAuthn + your Frontier Authorization PIN. Secrets are encrypted at rest and shown masked thereafter — never again in plaintext to anyone.
+        </p>
+        {error && <Notice tone="danger">{error.message}</Notice>}
+        <form onSubmit={submit}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <label className="field">
+              <span className="field-label">Environment</span>
+              <select className="select" value={environment} onChange={(e) => setEnvironment(e.target.value as 'sandbox' | 'production')}>
+                <option value="sandbox">Sandbox</option>
+                <option value="production">Production</option>
+              </select>
+            </label>
+            <label className="field">
+              <span className="field-label">Shortcode (5–9 digits)</span>
+              <input className="input mono" value={shortCode} onChange={(e) => setShortCode(e.target.value)} required pattern="\d{5,9}" />
+            </label>
+            <label className="field">
+              <span className="field-label">Initiator name</span>
+              <input className="input" value={initiatorName} onChange={(e) => setInitiatorName(e.target.value)} required />
+            </label>
+            <label className="field">
+              <span className="field-label">Command</span>
+              <span className="mono small">BusinessPayment (default)</span>
+            </label>
+            <label className="field">
+              <span className="field-label">Consumer key</span>
+              <input className="input mono" value={consumerKey} onChange={(e) => setConsumerKey(e.target.value)} required minLength={10} />
+            </label>
+            <label className="field">
+              <span className="field-label">Consumer secret</span>
+              <input className="input mono" type="password" value={consumerSecret} onChange={(e) => setConsumerSecret(e.target.value)} required minLength={10} />
+            </label>
+          </div>
+          <label className="field">
+            <span className="field-label">Initiator password OR pre-computed SecurityCredential</span>
+            <textarea
+              className="textarea mono"
+              rows={2}
+              placeholder="Password (8–30 chars, only # & % $ specials) or paste the base64 credential from the portal"
+              value={initiatorPasswordOrCredential}
+              onChange={(e) => setInitiatorPasswordOrCredential(e.target.value)}
+              required
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">M-PESA public certificate (PEM) — required with a password, not with a pre-computed credential</span>
+            <textarea
+              className="textarea mono"
+              rows={3}
+              placeholder={'-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----'}
+              value={mpesaCertificatePem}
+              onChange={(e) => setMpesaCertificatePem(e.target.value)}
+            />
+          </label>
+          <label className="field" style={{ maxWidth: 260 }}>
+            <span className="field-label">Your Frontier Authorization PIN</span>
+            <input className="input mono" type="password" inputMode="numeric" value={authorizationPin} onChange={(e) => setAuthorizationPin(e.target.value.replace(/\D/g, '').slice(0, 12))} required />
+          </label>
+          <div className="card-footer">
+            <button type="button" className="button" data-variant="ghost" onClick={onClose}>Cancel</button>
+            <button type="submit" className="button" data-variant="primary" disabled={busy}>
+              {busy ? 'Saving…' : 'Save configuration'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+
+  function configsExistHint(): string {
+    return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Policies
+// ---------------------------------------------------------------------------
+
+function PoliciesTab() {
+  const [policy, setPolicy] = useState<Record<string, unknown> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    void api.admin.policies.get().then((d) => setPolicy(d.policy)).catch((err) => setError(err instanceof ApiError ? err : null));
+  }, []);
+
+  async function save(patch: Record<string, unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.admin.policies.update(patch);
+      setPolicy(result.policy);
+      setNotice('Policy updated. The change is enforced on the next release attempt.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err : null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (error && !policy) return <ErrorPane error={error} />;
+  if (!policy) return <Loading />;
+
+  const numberField = (key: string, label: string, hint?: string) => (
+    <label className="field">
+      <span className="field-label">{label}</span>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input
+          className="input"
+          type="number"
+          defaultValue={Number(policy[key] ?? 0) / 100}
+          step="0.01"
+          onBlur={(e) => {
+            const cents = Math.round(Number(e.target.value) * 100);
+            if (cents !== Number(policy[key])) void save({ [key]: cents });
+          }}
+        />
+        <span className="muted small" style={{ alignSelf: 'center' }}>KES</span>
+      </div>
+      {hint && <span className="small muted">{hint}</span>}
+    </label>
+  );
+
+  return (
+    <>
+      {notice && <Notice tone="success">{notice}</Notice>}
+      {error && <Notice tone="danger">{error.message}</Notice>}
+
+      <Card title="Payment limits" footer={<span className="small muted">{busy ? 'Saving…' : 'Changes save on field blur — every change is audited and bound into future release manifests.'}</span>}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+          {numberField('maxInstructionAmountCents', 'Max per instruction', 'M-PESA hard cap: KES 250,000')}
+          {numberField('maxBatchTotalCents', 'Max batch total')}
+          {numberField('highValueThresholdCents', 'High-value threshold', 'Above this, the ceremony requires an extra acknowledgement')}
+          {numberField('dailyDisbursementCeilingCents', 'Daily disbursement ceiling', '0 disables the circuit breaker')}
+        </div>
+      </Card>
+
+      <Card title="Workflow controls">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+          <label className="field">
+            <span className="field-label">Cooling-off after edit (seconds)</span>
+            <input
+              className="input"
+              type="number"
+              defaultValue={Number(policy.coolingOffSeconds ?? 300)}
+              onBlur={(e) => {
+                const v = Number(e.target.value);
+                if (v !== Number(policy.coolingOffSeconds)) void save({ coolingOffSeconds: v });
+              }}
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Release cut-off (EAT, HH:MM)</span>
+            <input
+              className="input"
+              placeholder="17:00 or empty"
+              defaultValue={String(policy.releaseCutoffLocalTime ?? '')}
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (v !== String(policy.releaseCutoffLocalTime ?? '') && (v === '' || /^\d{2}:\d{2}$/.test(v))) void save({ releaseCutoffLocalTime: v });
+              }}
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">Risk band that blocks release</span>
+            <select
+              className="select"
+              defaultValue={String(policy.blockingRiskBand ?? 'CRITICAL')}
+              onChange={(e) => void save({ blockingRiskBand: e.target.value })}
+            >
+              <option value="NEVER">Never (advisory only)</option>
+              <option value="HIGH">High and above</option>
+              <option value="CRITICAL">Critical only</option>
+            </select>
+          </label>
+        </div>
+      </Card>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic permission engine (AC-17)
+// ---------------------------------------------------------------------------
+
+function PermissionsTab() {
+  const [data, setData] = useState<Awaited<ReturnType<typeof api.admin.permissions.overview>> | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    void api.admin.permissions.overview().then(setData).catch((err) => setError(err instanceof ApiError ? err : null));
+  }, [reloadKey]);
+
+  async function toggle(level: 'L1' | 'L2', permission: string, effect: 'GRANT' | 'REVOKE') {
+    const reason = window.prompt(`Reason for ${effect === 'GRANT' ? 'granting' : 'revoking'} “${permission}” for ${level}? (kept in the audit trail)`);
+    if (!reason || reason.trim().length < 3) return;
+    try {
+      const result = await api.admin.permissions.override({ level, permission, effect, reason });
+      setNotice(result.note);
+      setReloadKey((k) => k + 1);
+    } catch (err) {
+      setError(err instanceof ApiError ? err : null);
+    }
+  }
+
+  async function reset() {
+    const reason = window.prompt('Reason for restoring the baseline permission matrix?');
+    if (!reason || reason.trim().length < 3) return;
+    try {
+      await api.admin.permissions.reset(reason);
+      setNotice('Baseline matrix restored.');
+      setReloadKey((k) => k + 1);
+    } catch (err) {
+      setError(err instanceof ApiError ? err : null);
+    }
+  }
+
+  if (error && !data) return <ErrorPane error={error} />;
+  if (!data) return <Loading />;
+
+  const ceilingSet = new Set([...(data.ceilings['L1'] ?? []), ...(data.ceilings['L2'] ?? [])]);
+
+  return (
+    <>
+      {notice && <Notice tone="success">{notice}</Notice>}
+      {error && <Notice tone="danger">{error.message}</Notice>}
+
+      <Notice tone="info">
+        Changes are live immediately (every request recomputes the effective matrix) and are audited as
+        high-severity authority events. Ceiling-protected capabilities can never be granted — the engine
+        refuses them regardless of who asks. Level 3 authority itself is not configurable.
+      </Notice>
+
+      {(['L1', 'L2'] as const).map((level) => (
+        <Card key={level} title={`${level} effective permissions`} footer={
+          <button className="button" data-variant="ghost" onClick={() => void reset()}>Restore baseline (both levels)</button>
+        }>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 4 }}>
+            {data.catalogue
+              .filter((p) => !(data.baseline[level] ?? []).includes(p) || (data.effective[level] ?? []).includes(p))
+              .map((permission) => {
+                const held = (data.effective[level] ?? []).includes(permission);
+                const ceiling = ceilingSet.has(permission);
+                return (
+                  <label key={permission} className="checkbox" style={{ opacity: ceiling ? 0.45 : 1 }}>
+                    <input
+                      type="checkbox"
+                      checked={held}
+                      disabled={ceiling}
+                      onChange={(e) => void toggle(level, permission, e.target.checked ? 'GRANT' : 'REVOKE')}
+                    />
+                    <span>
+                      <span className="mono small">{permission}</span>
+                      {ceiling && <span className="small muted"> — ceiling-protected</span>}
+                    </span>
+                  </label>
+                );
+              })}
+          </div>
+        </Card>
+      ))}
+
+      {data.overrides.length > 0 && (
+        <Card title="Override history (versioned)">
+          <ul className="timeline">
+            {data.overrides.slice(0, 15).map((o) => (
+              <li key={o.id}>
+                <time>{relativeTime(o.createdAt)}</time>
+                <div>
+                  <span className={`chip`} data-tone={o.superseded ? 'neutral' : o.effect === 'GRANT' ? 'success' : 'warning'}>
+                    {o.effect}{o.superseded ? ' (superseded)' : ''}
+                  </span>{' '}
+                  <span className="mono small">{o.permission}</span> for <strong>{o.level}</strong> · v{o.version}
+                  <div className="small muted">“{o.reason}”</div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+
+function TemplatesTab() {
+  const [templates, setTemplates] = useState<Awaited<ReturnType<typeof api.admin.templates.list>>['templates'] | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    void api.admin.templates.list().then((d) => setTemplates(d.templates)).catch((err) => setError(err instanceof ApiError ? err : null));
+  }, [reloadKey]);
+
+  if (error) return <ErrorPane error={error} />;
+  if (!templates) return <Loading />;
+
+  return (
+    <Card title="Recurring batch templates">
+      {templates.length === 0 ? (
+        <Empty title="No templates" hint="Templates are created by the API today; scheduling and materialization run automatically once enabled." />
+      ) : (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Schedule</th>
+                <th className="num">Items</th>
+                <th>Next run</th>
+                <th>Status</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {templates.map((t) => (
+                <tr key={t.templateId}>
+                  <td>
+                    <div className="strong">{t.name}</div>
+                    <div className="small muted">{t.purpose}</div>
+                  </td>
+                  <td className="mono small">{t.scheduleCron}</td>
+                  <td className="num">{t.itemCount}</td>
+                  <td className="small muted">{t.nextRunAt ? new Date(t.nextRunAt).toLocaleString() : '—'}</td>
+                  <td>
+                    <span className="chip" data-tone={t.scheduleEnabled ? 'success' : 'neutral'}>
+                      {t.scheduleEnabled ? 'enabled' : 'disabled'}
+                    </span>
+                  </td>
+                  <td>
+                    <button
+                      className="button button-sm"
+                      onClick={() => void api.admin.templates.setEnabled(t.templateId, !t.scheduleEnabled).then(() => setReloadKey((k) => k + 1)).catch((e) => setError(e instanceof ApiError ? e : null))}
+                    >
+                      {t.scheduleEnabled ? 'Disable' : 'Enable'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}

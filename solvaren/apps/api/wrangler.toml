@@ -1,0 +1,44 @@
+# SOLVAREN API on Cloudflare Workers.
+#
+# The API is a Node-targeted service (Hono + postgres.js); Workers runs it under the
+# nodejs_compat compatibility flag. Two bindings are required before `wrangler deploy`:
+#
+#   DATABASE_URL (secret)  — Cloudflare does not host PostgreSQL. Point it at an external
+#                            managed Postgres (Neon/Supabase/RDS). For production, create
+#                            a Hyperdrive binding and set DB_CONN_STRING to its
+#                            connection-pooled address instead — same driver, edge-fast.
+#
+# The server refuses to boot without a reachable, migrated database — by design.
+
+name = "solvaren-api"
+main = "dist/server.js"
+compatibility_date = "2026-09-14"
+compatibility_flags = ["nodejs_compat"]
+
+# Route the API under its own subdomain or a path on the zone:
+# routes = [
+#   { pattern = "api.yourdomain.com/*", custom_domain = true }
+# ]
+
+[vars]
+# Non-secret configuration lives here; secrets (below) are set with `wrangler secret put`.
+ENVIRONMENT = "production"
+WEBAUTHN_RP_NAME = "SOLVAREN Payment Solutions"
+RUN_WORKERS = "true"
+RUN_SCHEDULER = "true"
+
+# Secrets — set once, never in this file:
+#   DATABASE_URL          (required — external PostgreSQL, or the Hyperdrive pooled URL)
+#   SESSION_SIGNING_KEY   (required — ≥32 chars)
+#   SECRET_ENCRYPTION_KEY (required — ≥32 chars, must differ from the session key)
+#   APP_ORIGIN            (required — the console's exact https origin)
+#   API_BASE_URL          (required — this Worker's public https origin; callback URLs are built from it)
+#   WEBAUTHN_RP_ID        (required — the WebAuthn domain)
+#   S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY  (required — secrets + backups store)
+#   S3_ENDPOINT           (R2/MinIO)
+#   AI_API_KEY            (optional — AI layer off without it)
+
+# Optional: Hyperdrive for edge-to-Postgres pooling.
+# [hyperdrive]
+# binding = "HYPERDRIVE"
+# id = "<hyperdrive-id>"

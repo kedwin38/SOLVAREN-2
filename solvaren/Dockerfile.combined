@@ -1,0 +1,82 @@
+# SOLVAREN — single-service image (combined API + console).
+#
+# For deployments where one service must serve both surfaces (single-resource plans,
+# simple environments): builds the whole workspace, then runs the API with the built
+# console mounted at ./console, served same-origin by the API process. Same-origin
+# removes the CORS surface entirely and gives WebAuthn a single RP domain.
+#
+# The dedicated apps/api/Dockerfile and apps/web/Dockerfile remain the reference
+# two-service topology for full deployments.
+
+FROM node:22-bookworm-slim AS build
+WORKDIR /repo
+
+RUN corepack enable
+ENV CI=true
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY packages/core/package.json packages/core/
+COPY packages/daraja/package.json packages/daraja/
+COPY packages/storage/package.json packages/storage/
+COPY apps/api/package.json apps/api/
+COPY apps/web/package.json apps/web/
+
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
+COPY tsconfig.base.json ./
+COPY packages packages
+COPY apps/api apps/api
+COPY apps/web apps/web
+
+# The console talks to the API at the same origin — no VITE_API_BASE_URL needed.
+RUN pnpm --filter @solvaren/core build \
+ && pnpm --filter @solvaren/daraja build \
+ && pnpm --filter @solvaren/storage build \
+ && pnpm --filter @solvaren/web build \
+ && pnpm --filter @solvaren/api build
+
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts
+
+# ---- Runtime ----------------------------------------------------------------
+FROM node:22-bookworm-slim AS runtime
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+RUN useradd --system --uid 10001 --home /app solvaren
+
+COPY --from=build /repo/node_modules ./node_modules
+COPY --from=build /repo/package.json ./package.json
+COPY --from=build /repo/pnpm-workspace.yaml ./pnpm-workspace.yaml
+
+COPY --from=build /repo/packages/core/package.json ./packages/core/package.json
+COPY --from=build /repo/packages/core/dist ./packages/core/dist
+COPY --from=build /repo/packages/core/node_modules ./packages/core/node_modules
+
+COPY --from=build /repo/packages/daraja/package.json ./packages/daraja/package.json
+COPY --from=build /repo/packages/daraja/dist ./packages/daraja/dist
+COPY --from=build /repo/packages/daraja/node_modules ./packages/daraja/node_modules
+
+COPY --from=build /repo/packages/storage/package.json ./packages/storage/package.json
+COPY --from=build /repo/packages/storage/dist ./packages/storage/dist
+COPY --from=build /repo/packages/storage/node_modules ./packages/storage/node_modules
+
+COPY --from=build /repo/apps/api/package.json ./apps/api/package.json
+COPY --from=build /repo/apps/api/dist ./apps/api/dist
+COPY --from=build /repo/apps/api/node_modules ./apps/api/node_modules
+
+# The console, served same-origin by the API process.
+COPY --from=build /repo/apps/web/dist ./console
+
+# Migrations and the runner travel with the image (pre-deploy command).
+COPY db/migrations ./db/migrations
+COPY scripts/migrate.mjs ./scripts/migrate.mjs
+
+USER solvaren
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://localhost:' + (process.env.PORT || 8080) + '/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+
+CMD ["node", "--enable-source-maps", "apps/api/dist/server.js"]
