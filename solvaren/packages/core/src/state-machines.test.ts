@@ -128,6 +128,43 @@ describe('batch state machine (spec §6)', () => {
     expect(assertTransition('RETURNED_FOR_CORRECTION', 'SUBMIT_TO_L2', { actor: l1 }).to).toBe('SUBMITTED_TO_L2');
   });
 
+  it('L3 can prepare a batch (validate, edit, submit, cancel) without L1 involvement', () => {
+    expect(assertTransition('DRAFT', 'VALIDATE', { actor: l3 }).to).toBe('VALIDATED');
+    expect(assertTransition('VALIDATED', 'INVALIDATE', { actor: l3 }).to).toBe('DRAFT');
+    expect(assertTransition('RETURNED_FOR_CORRECTION', 'INVALIDATE', { actor: l3 }).to).toBe('DRAFT');
+    expect(assertTransition('VALIDATED', 'SUBMIT_TO_L2', { actor: l3 }).to).toBe('SUBMITTED_TO_L2');
+    expect(assertTransition('RETURNED_FOR_CORRECTION', 'SUBMIT_TO_L2', { actor: l3 }).to).toBe('SUBMITTED_TO_L2');
+    expect(assertTransition('DRAFT', 'CANCEL', { actor: l3 }).to).toBe('CANCELLED');
+    expect(assertTransition('VALIDATED', 'CANCEL', { actor: l3 }).to).toBe('CANCELLED');
+    expect(assertTransition('RETURNED_FOR_CORRECTION', 'CANCEL', { actor: l3 }).to).toBe('CANCELLED');
+  });
+
+  it("L1's own preparation access is unaffected by L3 also owning those edges", () => {
+    expect(assertTransition('DRAFT', 'VALIDATE', { actor: l1 }).to).toBe('VALIDATED');
+    expect(assertTransition('VALIDATED', 'SUBMIT_TO_L2', { actor: l1 }).to).toBe('SUBMITTED_TO_L2');
+    expect(assertTransition('DRAFT', 'CANCEL', { actor: l1 }).to).toBe('CANCELLED');
+  });
+
+  it('L2 still cannot prepare a batch (unchanged)', () => {
+    expect(() => assertTransition('DRAFT', 'VALIDATE', { actor: l2 })).toThrow(/belongs to/i);
+    expect(() => assertTransition('VALIDATED', 'SUBMIT_TO_L2', { actor: l2 })).toThrow(/belongs to/i);
+  });
+
+  it('an L3-prepared batch still requires L2 review and a different L3 to authorize (two hands intact)', () => {
+    let state: BatchState = 'DRAFT';
+    const step = (command: BatchCommand, actor: typeof l1 | typeof l2 | typeof l3) => {
+      state = assertTransition(state, command, { actor }).to;
+    };
+    step('VALIDATE', l3);
+    step('SUBMIT_TO_L2', l3);
+    expect(state).toBe('SUBMITTED_TO_L2');
+    step('BEGIN_L2_REVIEW', l2);
+    // L2 review is still mandatory — an L3 cannot approve their own submission.
+    expect(() => assertTransition(state, 'APPROVE_TO_L3', { actor: l3 })).toThrow(/permission|belongs to/i);
+    step('APPROVE_TO_L3', l2);
+    expect(state).toBe('L3_READY');
+  });
+
   it('only editable states are DRAFT, VALIDATED and RETURNED_FOR_CORRECTION', () => {
     expect(isEditable('DRAFT')).toBe(true);
     expect(isEditable('VALIDATED')).toBe(true);

@@ -84,7 +84,12 @@ export interface BatchEdge {
   readonly to: BatchState;
   /** Permission the actor must hold. `null` = system-driven only. */
   readonly permission: Permission | null;
-  readonly minimumLevel: AuthorityLevel | null;
+  /**
+   * The authority level(s) that own this edge. A single level, several (e.g. an L1
+   * preparation step L3 may also perform end-to-end on their own batch), or `null` for
+   * a system-driven edge.
+   */
+  readonly minimumLevel: AuthorityLevel | readonly AuthorityLevel[] | null;
   readonly systemOnly: boolean;
   /** Human-readable purpose, surfaced in the batch state timeline UI. */
   readonly describes: string;
@@ -95,21 +100,26 @@ const E = (
   command: BatchCommand,
   to: BatchState,
   permission: Permission | null,
-  minimumLevel: AuthorityLevel | null,
+  minimumLevel: AuthorityLevel | readonly AuthorityLevel[] | null,
   describes: string,
   systemOnly = false,
 ): BatchEdge => ({ from, command, to, permission, minimumLevel, systemOnly, describes });
 
 export const BATCH_EDGES: readonly BatchEdge[] = [
   // ---- Level 1 preparation -------------------------------------------------
-  E('DRAFT', 'VALIDATE', 'VALIDATED', 'batch:validate', 'L1', 'All instructions passed validation'),
-  E('VALIDATED', 'INVALIDATE', 'DRAFT', 'batch:edit', 'L1', 'Batch edited after validation; revalidation required'),
-  E('RETURNED_FOR_CORRECTION', 'INVALIDATE', 'DRAFT', 'batch:edit', 'L1', 'Returned batch edited; back to draft'),
-  E('VALIDATED', 'SUBMIT_TO_L2', 'SUBMITTED_TO_L2', 'batch:submit_to_l2', 'L1', 'Submitted to Finance Control; approval version frozen'),
-  E('RETURNED_FOR_CORRECTION', 'SUBMIT_TO_L2', 'SUBMITTED_TO_L2', 'batch:submit_to_l2', 'L1', 'Corrected and resubmitted to Finance Control'),
-  E('DRAFT', 'CANCEL', 'CANCELLED', 'batch:cancel', 'L1', 'Draft abandoned'),
-  E('VALIDATED', 'CANCEL', 'CANCELLED', 'batch:cancel', 'L1', 'Validated batch abandoned before submission'),
-  E('RETURNED_FOR_CORRECTION', 'CANCEL', 'CANCELLED', 'batch:cancel', 'L1', 'Returned batch abandoned'),
+  // L3 also owns these: an executive may upload and validate a batch's CSV end-to-end
+  // without an L1 operator's involvement (still subject to the normal L2 review and,
+  // via separation of duties, to a *different* L3 for authorization — an L3 can never
+  // self-approve or self-authorize a batch they prepared). L1's own access to every one
+  // of these edges is unchanged.
+  E('DRAFT', 'VALIDATE', 'VALIDATED', 'batch:validate', ['L1', 'L3'], 'All instructions passed validation'),
+  E('VALIDATED', 'INVALIDATE', 'DRAFT', 'batch:edit', ['L1', 'L3'], 'Batch edited after validation; revalidation required'),
+  E('RETURNED_FOR_CORRECTION', 'INVALIDATE', 'DRAFT', 'batch:edit', ['L1', 'L3'], 'Returned batch edited; back to draft'),
+  E('VALIDATED', 'SUBMIT_TO_L2', 'SUBMITTED_TO_L2', 'batch:submit_to_l2', ['L1', 'L3'], 'Submitted to Finance Control; approval version frozen'),
+  E('RETURNED_FOR_CORRECTION', 'SUBMIT_TO_L2', 'SUBMITTED_TO_L2', 'batch:submit_to_l2', ['L1', 'L3'], 'Corrected and resubmitted to Finance Control'),
+  E('DRAFT', 'CANCEL', 'CANCELLED', 'batch:cancel', ['L1', 'L3'], 'Draft abandoned'),
+  E('VALIDATED', 'CANCEL', 'CANCELLED', 'batch:cancel', ['L1', 'L3'], 'Validated batch abandoned before submission'),
+  E('RETURNED_FOR_CORRECTION', 'CANCEL', 'CANCELLED', 'batch:cancel', ['L1', 'L3'], 'Returned batch abandoned'),
 
   // ---- Level 2 financial review -------------------------------------------
   E('SUBMITTED_TO_L2', 'BEGIN_L2_REVIEW', 'L2_REVIEW', 'batch:review', 'L2', 'Finance review opened'),
@@ -197,13 +207,15 @@ export function assertTransition(
       command,
     });
   }
-  // The edge names the authority level that owns it. An actor holding the permission
+  // The edge names the authority level(s) that own it. An actor holding the permission
   // through some other level's grant still may not traverse a level-specific edge:
-  // approval belongs to L2 alone, authorization to L3 alone.
-  if (edge.minimumLevel && options.actor.level !== edge.minimumLevel) {
+  // approval belongs to L2 alone, authorization to L3 alone. Some edges name more than
+  // one owning level (an L1 preparation step L3 may also perform on their own batch).
+  const allowedLevels = edge.minimumLevel === null ? null : Array.isArray(edge.minimumLevel) ? edge.minimumLevel : [edge.minimumLevel];
+  if (allowedLevels && !allowedLevels.includes(options.actor.level)) {
     throw authorizationError(
       'BATCH_TRANSITION_LEVEL_MISMATCH',
-      `Command ${command} belongs to ${edge.minimumLevel} authority; ${options.actor.level} may not perform it`,
+      `Command ${command} belongs to ${allowedLevels.join('/')} authority; ${options.actor.level} may not perform it`,
       { command, requiredLevel: edge.minimumLevel, actorLevel: options.actor.level },
     );
   }
