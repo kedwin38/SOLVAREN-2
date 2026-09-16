@@ -122,13 +122,20 @@ export const BATCH_EDGES: readonly BatchEdge[] = [
   E('RETURNED_FOR_CORRECTION', 'CANCEL', 'CANCELLED', 'batch:cancel', ['L1', 'L3'], 'Returned batch abandoned'),
 
   // ---- Level 2 financial review -------------------------------------------
-  E('SUBMITTED_TO_L2', 'BEGIN_L2_REVIEW', 'L2_REVIEW', 'batch:review', 'L2', 'Finance review opened'),
-  E('L2_REVIEW', 'APPROVE_TO_L3', 'L3_READY', 'batch:approve_to_l3', 'L2', 'Approved and forwarded for executive authorization'),
-  E('L2_REVIEW', 'REJECT', 'REJECTED', 'batch:reject', 'L2', 'Rejected; evidence preserved'),
-  E('L2_REVIEW', 'RETURN_TO_L1', 'RETURNED_FOR_CORRECTION', 'batch:reject', 'L2', 'Returned for correction'),
-  E('L2_REVIEW', 'HOLD', 'ON_HOLD', 'batch:hold', 'L2', 'Placed on hold pending clarification'),
-  E('SUBMITTED_TO_L2', 'HOLD', 'ON_HOLD', 'batch:hold', 'L2', 'Placed on hold pending clarification'),
-  E('SUBMITTED_TO_L2', 'REJECT', 'REJECTED', 'batch:reject', 'L2', 'Rejected before review'),
+  // L3 also owns these: an executive may open and carry out finance review end-to-end
+  // without an L2 officer's involvement. Separation of duties is still enforced by
+  // `assertNotSelfApproval`/`assertNotSelfAuthorization` on user identity, not authority
+  // level — an L3 who created, edited or submitted a batch still may not review or
+  // approve it, and an L3 who reviewed/approved a batch still may not authorize its
+  // release; a different L3 must do so. L2's own access to every one of these edges is
+  // unchanged.
+  E('SUBMITTED_TO_L2', 'BEGIN_L2_REVIEW', 'L2_REVIEW', 'batch:review', ['L2', 'L3'], 'Finance review opened'),
+  E('L2_REVIEW', 'APPROVE_TO_L3', 'L3_READY', 'batch:approve_to_l3', ['L2', 'L3'], 'Approved and forwarded for executive authorization'),
+  E('L2_REVIEW', 'REJECT', 'REJECTED', 'batch:reject', ['L2', 'L3'], 'Rejected; evidence preserved'),
+  E('L2_REVIEW', 'RETURN_TO_L1', 'RETURNED_FOR_CORRECTION', 'batch:reject', ['L2', 'L3'], 'Returned for correction'),
+  E('L2_REVIEW', 'HOLD', 'ON_HOLD', 'batch:hold', ['L2', 'L3'], 'Placed on hold pending clarification'),
+  E('SUBMITTED_TO_L2', 'HOLD', 'ON_HOLD', 'batch:hold', ['L2', 'L3'], 'Placed on hold pending clarification'),
+  E('SUBMITTED_TO_L2', 'REJECT', 'REJECTED', 'batch:reject', ['L2', 'L3'], 'Rejected before review'),
 
   // ---- Level 3 authorization -----------------------------------------------
   E('L3_READY', 'HOLD', 'ON_HOLD', 'batch:hold', 'L3', 'Executive hold'),
@@ -140,7 +147,7 @@ export const BATCH_EDGES: readonly BatchEdge[] = [
   E('AUTHORIZATION_PENDING', 'CANCEL', 'CANCELLED', 'batch:cancel', 'L3', 'Cancelled during authorization'),
 
   // ---- Hold handling ---------------------------------------------------------
-  E('ON_HOLD', 'RELEASE_HOLD', 'L2_REVIEW', 'batch:release_hold', 'L2', 'Hold lifted; returned to the review queue'),
+  E('ON_HOLD', 'RELEASE_HOLD', 'L2_REVIEW', 'batch:release_hold', ['L2', 'L3'], 'Hold lifted; returned to the review queue'),
   E('ON_HOLD', 'CANCEL', 'CANCELLED', 'batch:cancel', 'L3', 'Held batch cancelled'),
 
   // ---- Execution (system-driven only) ---------------------------------------

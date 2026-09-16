@@ -44,10 +44,10 @@ describe('baseline matrix (spec §4.4)', () => {
     expect(hasPermission(actor('L3'), 'payment:authorize')).toBe(true);
   });
 
-  it('gives batch approval to L2 alone (not L1, not L3)', () => {
+  it('gives batch approval to L2 and L3 (L3 has overall control), never L1', () => {
     expect(hasPermission(actor('L1'), 'batch:approve_to_l3')).toBe(false);
     expect(hasPermission(actor('L2'), 'batch:approve_to_l3')).toBe(true);
-    expect(hasPermission(actor('L3'), 'batch:approve_to_l3')).toBe(false);
+    expect(hasPermission(actor('L3'), 'batch:approve_to_l3')).toBe(true);
   });
 
   it('reserves Daraja administration for L3', () => {
@@ -89,8 +89,8 @@ describe('baseline matrix (spec §4.4)', () => {
     // Every catalogue permission tested against a stripped matrix.
     const stripped = effectivePermissions([]);
     expect(stripped.L1.size).toBe(baselinePermissions('L1').size);
-    // Fabricate an unknown permission by identity: not in any set.
-    expect(hasPermission(actor('L3'), 'batch:approve_to_l3')).toBe(false);
+    // L1 never holds batch approval — a permission absent from L1's baseline is refused.
+    expect(hasPermission(actor('L1'), 'batch:approve_to_l3')).toBe(false);
   });
 });
 

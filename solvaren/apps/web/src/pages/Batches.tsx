@@ -434,7 +434,7 @@ function BatchDetailModal({
             Submit to Finance Control
           </button>
         )}
-        {(b.state === 'SUBMITTED_TO_L2' || b.state === 'L2_REVIEW') && capabilities['batch:approve_to_l3'] && level === 'L2' && (
+        {(b.state === 'SUBMITTED_TO_L2' || b.state === 'L2_REVIEW') && capabilities['batch:approve_to_l3'] && (
           <button
             className="button"
             data-variant="primary"

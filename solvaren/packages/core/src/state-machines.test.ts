@@ -79,10 +79,14 @@ describe('batch state machine (spec §6)', () => {
     ).toThrow(/permission|belongs to/i);
   });
 
-  it('L3 cannot perform the L2 approval (two hands, always)', () => {
+  it('L3 may also perform the L2 review/approval edges (overall control)', () => {
+    // The state machine has no concept of user identity — a *different* L3 individual
+    // reviewing/approving is legitimate two hands. Same-individual self-approval is
+    // blocked by `assertNotSelfApproval` at the identity layer (see governance.test.ts),
+    // not here.
     expect(() =>
       assertTransition('L2_REVIEW', 'APPROVE_TO_L3', { actor: l3 }),
-    ).toThrow(/permission|belongs to/i);
+    ).not.toThrow();
   });
 
   it('execution edges are system-only — no human can walk a batch to SUCCESS', () => {
@@ -150,7 +154,7 @@ describe('batch state machine (spec §6)', () => {
     expect(() => assertTransition('VALIDATED', 'SUBMIT_TO_L2', { actor: l2 })).toThrow(/belongs to/i);
   });
 
-  it('an L3-prepared batch still requires L2 review and a different L3 to authorize (two hands intact)', () => {
+  it('an L3-prepared batch still requires a review/approval step and a different L3 to authorize (two hands intact)', () => {
     let state: BatchState = 'DRAFT';
     const step = (command: BatchCommand, actor: typeof l1 | typeof l2 | typeof l3) => {
       state = assertTransition(state, command, { actor }).to;
@@ -159,10 +163,38 @@ describe('batch state machine (spec §6)', () => {
     step('SUBMIT_TO_L2', l3);
     expect(state).toBe('SUBMITTED_TO_L2');
     step('BEGIN_L2_REVIEW', l2);
-    // L2 review is still mandatory — an L3 cannot approve their own submission.
-    expect(() => assertTransition(state, 'APPROVE_TO_L3', { actor: l3 })).toThrow(/permission|belongs to/i);
     step('APPROVE_TO_L3', l2);
     expect(state).toBe('L3_READY');
+    step('BEGIN_AUTHORIZATION', l3);
+    step('AUTHORIZE', l3);
+    // The state machine itself has no user identity, so it cannot know that the
+    // authorizing L3 here is or isn't the same person who prepared the batch — that
+    // is exactly why `assertNotSelfAuthorization` exists as a separate identity-based
+    // check (governance.test.ts: "blocks the creator from authorizing"), enforced by
+    // every route that calls this transition, not by the state machine.
+    expect(state).toBe('AUTHORIZED');
+  });
+
+  it('L3 can open and carry out review end-to-end (batch:review, batch:hold, batch:reject, batch:release_hold, batch:approve_to_l3 all reachable at L3)', () => {
+    expect(assertTransition('SUBMITTED_TO_L2', 'BEGIN_L2_REVIEW', { actor: l3 }).to).toBe('L2_REVIEW');
+    expect(assertTransition('SUBMITTED_TO_L2', 'HOLD', { actor: l3 }).to).toBe('ON_HOLD');
+    expect(assertTransition('SUBMITTED_TO_L2', 'REJECT', { actor: l3 }).to).toBe('REJECTED');
+    expect(assertTransition('L2_REVIEW', 'HOLD', { actor: l3 }).to).toBe('ON_HOLD');
+    expect(assertTransition('L2_REVIEW', 'REJECT', { actor: l3 }).to).toBe('REJECTED');
+    expect(assertTransition('L2_REVIEW', 'RETURN_TO_L1', { actor: l3 }).to).toBe('RETURNED_FOR_CORRECTION');
+    expect(assertTransition('L2_REVIEW', 'APPROVE_TO_L3', { actor: l3 }).to).toBe('L3_READY');
+    expect(assertTransition('ON_HOLD', 'RELEASE_HOLD', { actor: l3 }).to).toBe('L2_REVIEW');
+  });
+
+  it("L2's own review access is unaffected by L3 also owning those edges", () => {
+    expect(assertTransition('SUBMITTED_TO_L2', 'BEGIN_L2_REVIEW', { actor: l2 }).to).toBe('L2_REVIEW');
+    expect(assertTransition('L2_REVIEW', 'APPROVE_TO_L3', { actor: l2 }).to).toBe('L3_READY');
+    expect(assertTransition('ON_HOLD', 'RELEASE_HOLD', { actor: l2 }).to).toBe('L2_REVIEW');
+  });
+
+  it('L1 still cannot review or approve (unchanged)', () => {
+    expect(() => assertTransition('SUBMITTED_TO_L2', 'BEGIN_L2_REVIEW', { actor: l1 })).toThrow(/belongs to/i);
+    expect(() => assertTransition('L2_REVIEW', 'APPROVE_TO_L3', { actor: l1 })).toThrow(/belongs to/i);
   });
 
   it('only editable states are DRAFT, VALIDATED and RETURNED_FOR_CORRECTION', () => {

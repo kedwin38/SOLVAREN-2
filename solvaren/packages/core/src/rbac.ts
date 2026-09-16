@@ -161,6 +161,7 @@ const BASELINE: Record<AuthorityLevel, ReadonlySet<Permission>> = {
     'batch:submit_to_l2',
     'batch:read',
     'batch:review',
+    'batch:approve_to_l3',
     'batch:reject',
     'batch:hold',
     'batch:cancel',
