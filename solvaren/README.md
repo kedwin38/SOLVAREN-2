@@ -25,6 +25,13 @@ authentication (satisfiable mid-session via step-up), a WebAuthn signature over 
 manifest digest, the Frontier Authorization PIN, organization policy limits, the
 financial-calendar gates (cut-off, holidays), the risk gate and a valid state transition.
 
+By organizational decision, L3 — the chief/executive authority and overall superior of
+the system — is exempt from the creator/editor/approver separation-of-duties checks
+(`packages/core/src/sod.ts`) and may prepare, review, approve and authorize a batch alone,
+start to finish. L1 and L2 remain fully bound by separation of duties with no exemption.
+Every other gate on this list — fresh authentication, WebAuthn, the FPAC PIN, policy
+limits, the risk gate, a valid state transition — still applies to L3 unchanged.
+
 There is no override, no parameter that disables a check, and no branch that skips one.
 `apps/api/src/services/authorization.ts` is written to be read start to finish by an
 auditor.
@@ -85,7 +92,9 @@ Application logic can be bypassed. The schema cannot:
 - A `FAILED` transaction without a reason is refused by CHECK constraint.
 - `UPDATE` and `DELETE` on `audit_events` are refused by trigger, for every role.
 - A settled transaction cannot be re-settled; a receipt cannot be overwritten.
-- A batch creator cannot be recorded as its own approver or authorizer.
+- A batch creator cannot be recorded as its own approver or authorizer — unless the
+  acting approver/authorizer holds L3 authority (organizational decision; L1 and L2 have
+  no exemption).
 - Two concurrent authorization ceremonies on one batch are refused by a partial unique index.
 - An AI interaction claiming to have changed state is refused by CHECK constraint.
 - A job's body cannot change after enqueue; a queue message cannot redirect a payment.

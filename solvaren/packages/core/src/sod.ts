@@ -25,9 +25,16 @@ export interface SodContext {
   participants: BatchParticipants;
 }
 
-/** Creator ≠ approver, submitter ≠ approver, modifier ≠ approver. */
+/**
+ * Creator ≠ approver, submitter ≠ approver, modifier ≠ approver.
+ *
+ * L3 is exempt: the chief/executive authority is the overall superior of the system and
+ * may prepare, review and approve a batch alone. This is an organizational decision, not
+ * an oversight — L1 and L2 remain fully bound by this control.
+ */
 export function assertNotSelfApproval(ctx: SodContext): void {
-  const { actorUserId, participants } = ctx;
+  const { actorUserId, actorLevel, participants } = ctx;
+  if (actorLevel === 'L3') return;
   if (participants.createdByUserId === actorUserId) {
     throw policyError(
       'SOD_SELF_APPROVAL',
@@ -51,9 +58,18 @@ export function assertNotSelfApproval(ctx: SodContext): void {
   }
 }
 
-/** Creator ≠ authorizer, modifier ≠ authorizer, approver ≠ authorizer. */
+/**
+ * Creator ≠ authorizer, modifier ≠ authorizer, approver ≠ authorizer.
+ *
+ * L3 is exempt: the chief/executive authority is the overall superior of the system and
+ * may upload, validate and authorize a batch alone, end to end. This is an organizational
+ * decision, not an oversight — L1 and L2 remain fully bound by this control, and every
+ * other release gate (fresh authentication, WebAuthn, the FPAC PIN, policy limits, the
+ * risk gate, a valid state transition) still applies to L3 exactly as before.
+ */
 export function assertNotSelfAuthorization(ctx: SodContext): void {
-  const { actorUserId, participants } = ctx;
+  const { actorUserId, actorLevel, participants } = ctx;
+  if (actorLevel === 'L3') return;
   if (participants.createdByUserId === actorUserId) {
     throw policyError(
       'SOD_SELF_AUTHORIZATION',

@@ -16,7 +16,8 @@ SELECT '11111111-1111-1111-1111-111111111111'::uuid AS org_id,
        '22222222-2222-2222-2222-222222222222'::uuid AS creator_id,
        '33333333-3333-3333-3333-333333333333'::uuid AS approver_id,
        '44444444-4444-4444-4444-444444444444'::uuid AS batch_id,
-       '55555555-5555-5555-5555-555555555555'::uuid AS recipient_id;
+       '55555555-5555-5555-5555-555555555555'::uuid AS recipient_id,
+       '66666666-6666-6666-6666-666666666666'::uuid AS l2_approver_id;
 
 INSERT INTO organizations (id, slug, name)
 SELECT org_id, 'dbtest-org', 'DB Test Org' FROM seed
@@ -27,6 +28,9 @@ SELECT creator_id, org_id, 'creator@dbtest.test', 'Creator', 'L1', 'ACTIVE', 'x'
 ON CONFLICT (id) DO NOTHING;
 INSERT INTO users (id, organization_id, email, full_name, authority_level, status, password_hash, authorization_pin_hash)
 SELECT approver_id, org_id, 'approver@dbtest.test', 'Approver', 'L3', 'ACTIVE', 'x', 'y' FROM seed
+ON CONFLICT (id) DO NOTHING;
+INSERT INTO users (id, organization_id, email, full_name, authority_level, status, password_hash, authorization_pin_hash)
+SELECT l2_approver_id, org_id, 'l2approver@dbtest.test', 'L2 Approver', 'L2', 'ACTIVE', 'x', 'y' FROM seed
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO payment_batches (id, organization_id, batch_reference, purpose, created_by_user_id, state)
@@ -164,25 +168,49 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------
--- 6. A batch creator cannot be recorded as its own approver or authorizer.
+-- 6. A batch creator cannot be recorded as its own approver or authorizer,
+--    and an approver cannot also be the authorizer — for L1/L2. L3 is exempt
+--    by organizational decision (migration 0016; see assertion 6c below).
 -- ---------------------------------------------------------------------------
 DO $$
-DECLARE seed_org uuid; seed_batch uuid; seed_creator uuid;
+DECLARE seed_org uuid; seed_batch uuid; seed_creator uuid; seed_l2 uuid;
 BEGIN
-  SELECT s.org_id, s.batch_id, s.creator_id INTO seed_org, seed_batch, seed_creator FROM seed s;
+  SELECT s.org_id, s.batch_id, s.creator_id, s.l2_approver_id
+    INTO seed_org, seed_batch, seed_creator, seed_l2 FROM seed s;
   BEGIN
     UPDATE payment_batches SET approved_by_user_id = seed_creator WHERE id = seed_batch;
     RAISE EXCEPTION 'ASSERTION 6a FAILED: self-approval was accepted';
   EXCEPTION WHEN check_violation THEN
-    RAISE NOTICE '✓ 6a. self-approval refused by the schema';
+    RAISE NOTICE '✓ 6a. self-approval refused by the schema (L1 creator)';
   END;
 
   BEGIN
-    UPDATE payment_batches SET approved_by_user_id = (SELECT approver_id FROM seed),
-      authorized_by_user_id = (SELECT approver_id FROM seed) WHERE id = seed_batch;
+    UPDATE payment_batches SET approved_by_user_id = seed_l2, authorized_by_user_id = seed_l2
+     WHERE id = seed_batch;
     RAISE EXCEPTION 'ASSERTION 6b FAILED: approver-as-authorizer was accepted';
   EXCEPTION WHEN check_violation THEN
-    RAISE NOTICE '✓ 6b. approver ≠ authorizer enforced by the schema';
+    RAISE NOTICE '✓ 6b. approver ≠ authorizer enforced by the schema (L2 approver)';
+  END;
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- 6c. An L3 creator MAY be recorded as their own approver and authorizer —
+--     organizational decision (migration 0016); L1/L2 above remain fully blocked.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE seed_org uuid; seed_l3 uuid; l3_batch uuid := gen_random_uuid();
+BEGIN
+  SELECT s.org_id, s.approver_id INTO seed_org, seed_l3 FROM seed s; -- approver_id is seeded as L3
+
+  INSERT INTO payment_batches (id, organization_id, batch_reference, purpose, created_by_user_id, state)
+  VALUES (l3_batch, seed_org, 'SLV-DBTEST-L3-SELF', 'L3 self-service batch', seed_l3, 'DRAFT');
+
+  BEGIN
+    UPDATE payment_batches SET approved_by_user_id = seed_l3, authorized_by_user_id = seed_l3
+     WHERE id = l3_batch;
+    RAISE NOTICE '✓ 6c. an L3 creator may approve and authorize their own batch';
+  EXCEPTION WHEN check_violation THEN
+    RAISE EXCEPTION 'ASSERTION 6c FAILED: L3 self-approval/self-authorization was refused';
   END;
 END $$;
 
@@ -265,9 +293,9 @@ DELETE FROM authorization_challenges WHERE nonce LIKE 'nonce-%';
 DELETE FROM approvals WHERE approval_reference = 'APR-DBTEST';
 DELETE FROM transactions WHERE originator_conversation_id LIKE 'SLV-DBTEST%';
 DELETE FROM payment_instructions WHERE batch_id = (SELECT batch_id FROM seed);
-DELETE FROM payment_batches WHERE id = (SELECT batch_id FROM seed);
+DELETE FROM payment_batches WHERE id = (SELECT batch_id FROM seed) OR batch_reference = 'SLV-DBTEST-L3-SELF';
 DELETE FROM recipients WHERE id = (SELECT recipient_id FROM seed);
-DELETE FROM users WHERE id IN (SELECT creator_id FROM seed UNION SELECT approver_id FROM seed);
+DELETE FROM users WHERE id IN (SELECT creator_id FROM seed UNION SELECT approver_id FROM seed UNION SELECT l2_approver_id FROM seed);
 DELETE FROM organizations WHERE id = (SELECT org_id FROM seed);
 
 RAISE NOTICE 'All database assertions passed.';

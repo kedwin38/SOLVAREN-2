@@ -37,20 +37,44 @@ describe('creator ≠ approver ≠ authorizer', () => {
     expect(() => assertNotSelfApproval({ actorUserId: 'someone-else', actorLevel: 'L2', participants })).not.toThrow();
   });
 
-  it('blocks the creator from authorizing (final release)', () => {
-    expect(() => assertNotSelfAuthorization({ actorUserId: 'creator', actorLevel: 'L3', participants })).toThrow(/created this batch/i);
-  });
-
-  it('blocks an editor from authorizing', () => {
-    expect(() => assertNotSelfAuthorization({ actorUserId: 'editor', actorLevel: 'L3', participants })).toThrow(/edited this batch/i);
-  });
-
-  it('blocks the L2 approver from also being the L3 authorizer — two hands, always', () => {
-    expect(() => assertNotSelfAuthorization({ actorUserId: 'approver', actorLevel: 'L3', participants })).toThrow(/finance approval/i);
-  });
-
   it('permits an uninvolved L3 to authorize', () => {
     expect(() => assertNotSelfAuthorization({ actorUserId: 'chief', actorLevel: 'L3', participants })).not.toThrow();
+  });
+
+  it('the creator/editor/approver-not-authorizer control still exists at the function level (would block a non-L3 actor)', () => {
+    // These are not reachable through any live route — only L3 holds payment:authorize
+    // — but the underlying check must still exist for the day it is ever reused.
+    const asNonL3 = { ...participants };
+    expect(() => assertNotSelfAuthorization({ actorUserId: 'creator', actorLevel: 'L2', participants: asNonL3 })).toThrow(/created this batch/i);
+    expect(() => assertNotSelfAuthorization({ actorUserId: 'editor', actorLevel: 'L2', participants: asNonL3 })).toThrow(/edited this batch/i);
+    expect(() => assertNotSelfAuthorization({ actorUserId: 'approver', actorLevel: 'L2', participants: asNonL3 })).toThrow(/finance approval/i);
+  });
+});
+
+describe('L3 exemption — overall control (organizational decision, spec §20 amended)', () => {
+  it('permits an L3 to authorize a batch they themselves created', () => {
+    expect(() => assertNotSelfAuthorization({ actorUserId: 'creator', actorLevel: 'L3', participants })).not.toThrow();
+  });
+
+  it('permits an L3 to authorize a batch they themselves edited', () => {
+    expect(() => assertNotSelfAuthorization({ actorUserId: 'editor', actorLevel: 'L3', participants })).not.toThrow();
+  });
+
+  it('permits an L3 to authorize a batch they themselves approved (single-officer end-to-end)', () => {
+    expect(() => assertNotSelfAuthorization({ actorUserId: 'approver', actorLevel: 'L3', participants })).not.toThrow();
+  });
+
+  it('permits an L3 to approve a batch they themselves created, edited or submitted', () => {
+    expect(() => assertNotSelfApproval({ actorUserId: 'creator', actorLevel: 'L3', participants })).not.toThrow();
+    expect(() => assertNotSelfApproval({ actorUserId: 'editor', actorLevel: 'L3', participants })).not.toThrow();
+    expect(() => assertNotSelfApproval({ actorUserId: 'submitter', actorLevel: 'L3', participants })).not.toThrow();
+  });
+
+  it('L1 and L2 remain fully bound by both controls — the exemption is L3-only', () => {
+    expect(() => assertNotSelfApproval({ actorUserId: 'creator', actorLevel: 'L1', participants })).toThrow(/created this batch/i);
+    expect(() => assertNotSelfApproval({ actorUserId: 'creator', actorLevel: 'L2', participants })).toThrow(/created this batch/i);
+    expect(() => assertNotSelfAuthorization({ actorUserId: 'creator', actorLevel: 'L1', participants })).toThrow(/created this batch/i);
+    expect(() => assertNotSelfAuthorization({ actorUserId: 'creator', actorLevel: 'L2', participants })).toThrow(/created this batch/i);
   });
 
   it('every denial carries a reason (shown to the user, written to the audit log)', () => {

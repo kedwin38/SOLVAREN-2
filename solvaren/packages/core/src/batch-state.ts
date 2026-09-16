@@ -108,10 +108,11 @@ const E = (
 export const BATCH_EDGES: readonly BatchEdge[] = [
   // ---- Level 1 preparation -------------------------------------------------
   // L3 also owns these: an executive may upload and validate a batch's CSV end-to-end
-  // without an L1 operator's involvement (still subject to the normal L2 review and,
-  // via separation of duties, to a *different* L3 for authorization — an L3 can never
-  // self-approve or self-authorize a batch they prepared). L1's own access to every one
-  // of these edges is unchanged.
+  // without an L1 operator's involvement. By organizational decision, L3 is the overall
+  // superior of the system and is exempt from the creator/editor/approver separation-of-
+  // duties checks in sod.ts, so the same L3 may also review, approve and authorize a
+  // batch they themselves prepared, start to finish. L1 and L2 remain fully bound by
+  // those checks. L1's own access to every one of these edges is unchanged.
   E('DRAFT', 'VALIDATE', 'VALIDATED', 'batch:validate', ['L1', 'L3'], 'All instructions passed validation'),
   E('VALIDATED', 'INVALIDATE', 'DRAFT', 'batch:edit', ['L1', 'L3'], 'Batch edited after validation; revalidation required'),
   E('RETURNED_FOR_CORRECTION', 'INVALIDATE', 'DRAFT', 'batch:edit', ['L1', 'L3'], 'Returned batch edited; back to draft'),
@@ -123,12 +124,9 @@ export const BATCH_EDGES: readonly BatchEdge[] = [
 
   // ---- Level 2 financial review -------------------------------------------
   // L3 also owns these: an executive may open and carry out finance review end-to-end
-  // without an L2 officer's involvement. Separation of duties is still enforced by
-  // `assertNotSelfApproval`/`assertNotSelfAuthorization` on user identity, not authority
-  // level — an L3 who created, edited or submitted a batch still may not review or
-  // approve it, and an L3 who reviewed/approved a batch still may not authorize its
-  // release; a different L3 must do so. L2's own access to every one of these edges is
-  // unchanged.
+  // without an L2 officer's involvement — including reviewing/approving a batch they
+  // themselves prepared (see the L3 exemption note above). L2's own access to every one
+  // of these edges, and L2's own full separation-of-duties obligations, are unchanged.
   E('SUBMITTED_TO_L2', 'BEGIN_L2_REVIEW', 'L2_REVIEW', 'batch:review', ['L2', 'L3'], 'Finance review opened'),
   E('L2_REVIEW', 'APPROVE_TO_L3', 'L3_READY', 'batch:approve_to_l3', ['L2', 'L3'], 'Approved and forwarded for executive authorization'),
   E('L2_REVIEW', 'REJECT', 'REJECTED', 'batch:reject', ['L2', 'L3'], 'Rejected; evidence preserved'),

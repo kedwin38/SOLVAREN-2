@@ -154,7 +154,7 @@ describe('batch state machine (spec §6)', () => {
     expect(() => assertTransition('VALIDATED', 'SUBMIT_TO_L2', { actor: l2 })).toThrow(/belongs to/i);
   });
 
-  it('an L3-prepared batch still requires a review/approval step and a different L3 to authorize (two hands intact)', () => {
+  it('an L3-prepared batch still requires a review/approval step before authorization', () => {
     let state: BatchState = 'DRAFT';
     const step = (command: BatchCommand, actor: typeof l1 | typeof l2 | typeof l3) => {
       state = assertTransition(state, command, { actor }).to;
@@ -167,11 +167,11 @@ describe('batch state machine (spec §6)', () => {
     expect(state).toBe('L3_READY');
     step('BEGIN_AUTHORIZATION', l3);
     step('AUTHORIZE', l3);
-    // The state machine itself has no user identity, so it cannot know that the
-    // authorizing L3 here is or isn't the same person who prepared the batch — that
-    // is exactly why `assertNotSelfAuthorization` exists as a separate identity-based
-    // check (governance.test.ts: "blocks the creator from authorizing"), enforced by
-    // every route that calls this transition, not by the state machine.
+    // The state machine itself has no user identity — whether the authorizing L3 here
+    // is or isn't the same person who prepared the batch is decided by the separate
+    // identity-based `assertNotSelfAuthorization` check (sod.ts), which by organizational
+    // decision exempts L3 entirely (governance.test.ts: "L3 exemption — overall control").
+    // L1 and L2 remain fully bound by it; only L3 may go end to end alone.
     expect(state).toBe('AUTHORIZED');
   });
 

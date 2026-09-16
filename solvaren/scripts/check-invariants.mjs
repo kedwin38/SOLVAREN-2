@@ -128,7 +128,7 @@ report.push('── Schema-enforced immutability ──');
 check('audit UPDATE refused by trigger', 'found', 'audit_events_no_update');
 check('audit DELETE refused by trigger', 'found', 'audit_events_no_delete');
 check('SUCCESS requires a receipt in the schema', 'found', 'transactions_success_requires_receipt');
-check('self-approval refused in the schema', 'found', 'batches_no_self_approval');
+check('self-approval refused in the schema for L1/L2 (L3 is exempt by organizational decision)', 'found', 'enforce_batch_separation_of_duties');
 check('one live payment job per instruction', 'found', 'job_queue_one_live_payment_per_instruction');
 
 // ---------------------------------------------------------------------------
