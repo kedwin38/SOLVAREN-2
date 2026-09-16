@@ -34,6 +34,10 @@ interface RowShape {
   period: string | null;
   recipient: string;
   department: string;
+  role: string | null;
+  territory: string | null;
+  region: string | null;
+  sales_count: string | null;
   amount_cents: string;
   batch_reference: string;
   mpesa_receipt_number: string | null;
@@ -166,7 +170,7 @@ export async function buildReportRows(
       return {
         columns: definition.columns,
         rows: rows.map((r) => [
-          r.batchReference, r.recipientName, r.msisdn, r.departmentName,
+          r.batchReference, r.recipientName, r.msisdn, r.departmentName, r.role, r.territory, r.region,
           formatCents(r.amountCents), r.status, r.failureCode, r.failureReason,
           r.mpesaReceiptNumber, r.originatorConversationId, r.submittedAt ?? '', r.completedAt ?? '',
         ]),
@@ -175,7 +179,10 @@ export async function buildReportRows(
     }    case 'payroll': {
       const rows = await sql.unsafe<RowShape[]>(
         `SELECT b.payment_period AS period, pi.recipient_name_snapshot AS recipient,
-                COALESCE(d.name, 'Unassigned') AS department, pi.amount_cents,
+                COALESCE(d.name, 'Unassigned') AS department,
+                pi.role_snapshot AS role, pi.territory_snapshot AS territory,
+                pi.region_snapshot AS region, pi.sales_count,
+                pi.amount_cents,
                 b.batch_reference, t.mpesa_receipt_number, t.completed_at
            FROM transactions t
            JOIN payment_instructions pi ON pi.id = t.instruction_id
@@ -194,7 +201,8 @@ export async function buildReportRows(
       return {
         columns: definition.columns,
         rows: rows.map((r) => [
-          r.period ?? '—', r.recipient, r.department, formatCents(Number(r.amount_cents)),
+          r.period ?? '—', r.recipient, r.department, r.role ?? '', r.territory ?? '', r.region ?? '',
+          r.sales_count ?? '', formatCents(Number(r.amount_cents)),
           r.batch_reference, r.mpesa_receipt_number ?? '', asIso(r.completed_at),
         ]),
         filterDescription,
@@ -477,6 +485,9 @@ interface PaymentExplorerShape {
   recipient_name: string;
   msisdn: string;
   department_name: string;
+  role: string | null;
+  territory: string | null;
+  region: string | null;
   amount_cents: string;
   status: string;
   failure_code: string | null;
@@ -495,6 +506,7 @@ async function queryPaymentRows(
   const rows = await sql.unsafe<PaymentExplorerShape[]>(
     `SELECT b.batch_reference, pi.recipient_name_snapshot AS recipient_name,
             pi.msisdn_snapshot AS msisdn, COALESCE(d.name, 'Unassigned') AS department_name,
+            pi.role_snapshot AS role, pi.territory_snapshot AS territory, pi.region_snapshot AS region,
             pi.amount_cents, t.status, t.failure_code, t.failure_reason,
             t.mpesa_receipt_number, t.originator_conversation_id, t.submitted_at, t.completed_at
        FROM transactions t
@@ -518,6 +530,9 @@ async function queryPaymentRows(
     recipientName: r.recipient_name,
     msisdn: r.msisdn,
     departmentName: r.department_name,
+    role: r.role,
+    territory: r.territory,
+    region: r.region,
     amountCents: Number(r.amount_cents),
     status: r.status,
     failureCode: r.failure_code,

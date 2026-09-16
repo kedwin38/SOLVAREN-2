@@ -54,6 +54,9 @@ export interface TransactionExportRow {
   recipientName: string;
   msisdn: string;
   departmentName: string | null;
+  role: string | null;
+  territory: string | null;
+  region: string | null;
   amountCents: number;
   status: string;
   failureCode: string | null;
@@ -79,6 +82,9 @@ export function renderFailedTransactionsCsv(
     'Recipient Name',
     'Phone',
     'Department',
+    'Role',
+    'Territory',
+    'Region',
     'Amount (KES)',
     'Status',
     'Failure Code',
@@ -100,6 +106,9 @@ export function renderFailedTransactionsCsv(
     r.recipientName,
     r.msisdn,
     r.departmentName,
+    r.role,
+    r.territory,
+    r.region,
     formatCents(r.amountCents),
     r.status,
     r.failureCode ?? '',

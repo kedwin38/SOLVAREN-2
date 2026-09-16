@@ -145,6 +145,36 @@ describe('CSV ingestion (spec §5.2, §23 field-level errors)', () => {
     const result = parsePaymentCsv(csv);
     expect(result.rows[0]!.recipientName).toBe('Wanjiku, Jane');
   });
+
+  it('parses the organisation-preferred format (phone/id/names/role/team/territory/region/sales/payout)', () => {
+    const csv =
+      'PHONE NUMBER,ID NUMBER,NAMES,ROLE,TEAM NAME,TERRITORY,REGION,SALES,PAYOUT\n' +
+      '705221156,546414707,EMMANUEL NJUGUNA MURIITHI,TEAM LEADER,CHOGORIA B,CHUKA,MOUNTAIN,287,15000\n' +
+      '118002862,366981640,Sharon kagwiria,TEAM LEADER,CHUKA A,CHUKA,MOUNTAIN,139,8340\n';
+    const result = parsePaymentCsv(csv);
+    expect(result.errors).toHaveLength(0);
+    expect(result.rows).toHaveLength(2);
+    const [first] = result.rows;
+    expect(first!.recipientName).toBe('EMMANUEL NJUGUNA MURIITHI');
+    expect(first!.msisdn).toBe('254705221156');
+    expect(first!.amountCents).toBe(1_500_000);
+    expect(first!.reference).toBe('546414707');
+    expect(first!.department).toBe('CHOGORIA B');
+    expect(first!.role).toBe('TEAM LEADER');
+    expect(first!.territory).toBe('CHUKA');
+    expect(first!.region).toBe('MOUNTAIN');
+    expect(first!.salesCount).toBe(287);
+    expect(result.totalAmountCents).toBe(2_334_000);
+  });
+
+  it('rejects a non-numeric sales figure as a row error', () => {
+    const csv =
+      'PHONE NUMBER,NAMES,PAYOUT,SALES\n' +
+      '0705912645,Jane,50000,not-a-number\n';
+    const result = parsePaymentCsv(csv);
+    expect(result.rows).toHaveLength(0);
+    expect(result.errors[0]!.column).toBe('sales');
+  });
 });
 
 describe('cron (spec §10 batch scheduler)', () => {

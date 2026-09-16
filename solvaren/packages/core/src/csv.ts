@@ -24,12 +24,19 @@ import { SolvarenError, validationError } from './errors.js';
 
 /** Canonical upload schema. Header matching is case- and whitespace-insensitive. */
 export const CSV_COLUMNS = {
-  recipientName: ['recipient name', 'name', 'employee name', 'full name', 'recipientname'],
+  recipientName: ['recipient name', 'name', 'names', 'employee name', 'full name', 'recipientname'],
   msisdn: ['phone', 'phone number', 'msisdn', 'mobile', 'mobile number', 'telephone'],
-  amount: ['amount', 'amount kes', 'amountkes', 'kes', 'gross', 'net pay', 'netpay'],
-  department: ['department', 'dept', 'category', 'cost centre', 'cost center'],
-  reference: ['reference', 'ref', 'employee id', 'employee number', 'staff id', 'payroll id'],
+  amount: ['amount', 'amount kes', 'amountkes', 'kes', 'gross', 'net pay', 'netpay', 'payout'],
+  department: ['department', 'dept', 'category', 'cost centre', 'cost center', 'team name', 'team'],
+  reference: [
+    'reference', 'ref', 'employee id', 'employee number', 'staff id', 'payroll id',
+    'id number', 'national id', 'id no',
+  ],
   remarks: ['remarks', 'remark', 'purpose', 'description', 'note', 'notes'],
+  role: ['role', 'position', 'job role', 'job title', 'title'],
+  territory: ['territory'],
+  region: ['region'],
+  sales: ['sales', 'sales count', 'units sold', 'no of sales', 'number of sales'],
 } as const;
 
 export type CsvColumnKey = keyof typeof CSV_COLUMNS;
@@ -49,6 +56,11 @@ export interface ParsedRow {
   department: string | null;
   reference: string | null;
   remarks: string | null;
+  role: string | null;
+  territory: string | null;
+  region: string | null;
+  /** A per-payout-run performance figure (e.g. units sold), not a monetary value. */
+  salesCount: number | null;
 }
 
 export interface RowError {
@@ -300,6 +312,23 @@ export function parsePaymentCsv(text: string, options: CsvParseOptions = {}): Cs
       }
     }
 
+    const salesRaw = at(cells, 'sales');
+    let salesCount: number | null = null;
+    if (salesRaw !== '') {
+      const parsedSales = Number(salesRaw.replace(/,/g, ''));
+      if (!Number.isFinite(parsedSales) || parsedSales < 0) {
+        errors.push({
+          lineNumber,
+          column: 'sales',
+          value: salesRaw,
+          reason: 'Sales must be a non-negative number',
+        });
+        rowFailed = true;
+      } else {
+        salesCount = parsedSales;
+      }
+    }
+
     if (rowFailed) return;
 
     rows.push({
@@ -310,6 +339,10 @@ export function parsePaymentCsv(text: string, options: CsvParseOptions = {}): Cs
       department: at(cells, 'department') || null,
       reference: at(cells, 'reference') || null,
       remarks: at(cells, 'remarks') || null,
+      role: at(cells, 'role') || null,
+      territory: at(cells, 'territory') || null,
+      region: at(cells, 'region') || null,
+      salesCount,
     });
   });
 

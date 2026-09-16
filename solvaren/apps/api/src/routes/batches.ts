@@ -139,11 +139,19 @@ batchRoutes.post('/:id/upload', requirePermissions('batch:edit'), async (c) => {
         // Upsert the recipient master record. A brand-new recipient is fine; it simply
         // raises a NEW_RECIPIENT risk signal for the reviewer.
         const recipients = await tx<{ id: string; status: string; department_id: string | null }[]>`
-          INSERT INTO recipients (organization_id, full_name, msisdn, external_reference, created_by_user_id)
-          VALUES (${actor.organizationId}, ${row.recipientName}, ${normalizeMsisdn(row.msisdn)},
-                  ${row.reference}, ${actor.userId})
+          INSERT INTO recipients (
+            organization_id, full_name, msisdn, external_reference, role, territory, region,
+            created_by_user_id
+          )
+          VALUES (
+            ${actor.organizationId}, ${row.recipientName}, ${normalizeMsisdn(row.msisdn)},
+            ${row.reference}, ${row.role}, ${row.territory}, ${row.region}, ${actor.userId}
+          )
           ON CONFLICT (organization_id, msisdn) DO UPDATE
-            SET external_reference = COALESCE(EXCLUDED.external_reference, recipients.external_reference)
+            SET external_reference = COALESCE(EXCLUDED.external_reference, recipients.external_reference),
+                role = COALESCE(EXCLUDED.role, recipients.role),
+                territory = COALESCE(EXCLUDED.territory, recipients.territory),
+                region = COALESCE(EXCLUDED.region, recipients.region)
           RETURNING id, status, department_id
         `;
         const recipient = recipients[0]!;
@@ -170,11 +178,13 @@ batchRoutes.post('/:id/upload', requirePermissions('batch:edit'), async (c) => {
         await tx`
           INSERT INTO payment_instructions (
             organization_id, batch_id, recipient_id, recipient_name_snapshot, msisdn_snapshot,
-            department_id, amount_cents, remarks, source_line_number
+            department_id, amount_cents, remarks, source_line_number,
+            role_snapshot, territory_snapshot, region_snapshot, sales_count
           ) VALUES (
             ${actor.organizationId}, ${batch.id}, ${recipient.id}, ${row.recipientName},
             ${normalizeMsisdn(row.msisdn)}, ${departmentId}, ${row.amountCents},
-            ${(row.remarks ?? 'Business payment').slice(0, 100)}, ${row.lineNumber}
+            ${(row.remarks ?? 'Business payment').slice(0, 100)}, ${row.lineNumber},
+            ${row.role}, ${row.territory}, ${row.region}, ${row.salesCount}
           )
         `;
         inserted += 1;
@@ -889,9 +899,14 @@ batchRoutes.get('/:id', requirePermissions('batch:read'), async (c) => {
         amount_cents: string;
         status: string;
         source_line_number: number | null;
+        role_snapshot: string | null;
+        territory_snapshot: string | null;
+        region_snapshot: string | null;
+        sales_count: string | null;
       }[]
     >`
-      SELECT id, recipient_name_snapshot, msisdn_snapshot, amount_cents, status, source_line_number
+      SELECT id, recipient_name_snapshot, msisdn_snapshot, amount_cents, status, source_line_number,
+             role_snapshot, territory_snapshot, region_snapshot, sales_count
         FROM payment_instructions
        WHERE batch_id = ${batchId}
        ORDER BY source_line_number NULLS LAST, id
@@ -964,6 +979,10 @@ batchRoutes.get('/:id', requirePermissions('batch:read'), async (c) => {
           amountCents: Number(i.amount_cents),
           status: i.status,
           sourceLineNumber: i.source_line_number,
+          role: i.role_snapshot,
+          territory: i.territory_snapshot,
+          region: i.region_snapshot,
+          salesCount: i.sales_count === null ? null : Number(i.sales_count),
         })),
         offset,
         limit,

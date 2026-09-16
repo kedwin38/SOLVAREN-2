@@ -301,6 +301,10 @@ export interface TransactionRow {
   msisdn: string;
   departmentId: string | null;
   departmentName: string | null;
+  role: string | null;
+  territory: string | null;
+  region: string | null;
+  salesCount: number | null;
   amountCents: number;
   status: TransactionStatus;
   statusTone: 'success' | 'danger' | 'warning' | 'info' | 'neutral';
@@ -401,7 +405,11 @@ export interface BatchDetail {
     availableCommands: string[];
   };
   instructions: {
-    rows: { instructionId: string; recipientName: string; msisdn: string; amountCents: number; status: string; sourceLineNumber: number | null }[];
+    rows: {
+      instructionId: string; recipientName: string; msisdn: string; amountCents: number;
+      status: string; sourceLineNumber: number | null;
+      role: string | null; territory: string | null; region: string | null; salesCount: number | null;
+    }[];
     offset: number;
     limit: number;
     total: number;
@@ -689,14 +697,25 @@ export const api = {
   recipients: {
     list: (search?: string, status?: string, limit = 100, offset = 0) =>
       request<{
-        recipients: { recipientId: string; fullName: string; msisdn: string; departmentName: string | null; externalReference: string | null; status: string; notes: string | null; createdAt: string; paymentCount: number; meanAmountCents: number }[];
+        recipients: {
+          recipientId: string; fullName: string; msisdn: string; departmentName: string | null;
+          externalReference: string | null; status: string; notes: string | null; createdAt: string;
+          paymentCount: number; meanAmountCents: number;
+          role: string | null; territory: string | null; region: string | null;
+        }[];
         total: number;
       }>(`/recipients/recipients?${new URLSearchParams({ ...(search ? { search } : {}), ...(status ? { status } : {}), limit: String(limit), offset: String(offset) })}`),
 
-    create: (body: { fullName: string; msisdn: string; externalReference?: string; departmentId?: string }) =>
+    create: (body: {
+      fullName: string; msisdn: string; externalReference?: string; departmentId?: string;
+      role?: string; territory?: string; region?: string;
+    }) =>
       request<{ recipientId: string }>('/recipients/recipients', { method: 'POST', body }),
 
-    update: (id: string, body: { fullName?: string; msisdn?: string; status?: 'ACTIVE' | 'INACTIVE' | 'BLOCKED' }) =>
+    update: (id: string, body: {
+      fullName?: string; msisdn?: string; status?: 'ACTIVE' | 'INACTIVE' | 'BLOCKED';
+      role?: string | null; territory?: string | null; region?: string | null;
+    }) =>
       request<{ updated: boolean }>(`/recipients/recipients/${id}`, { method: 'PATCH', body }),
 
     history: (id: string) =>

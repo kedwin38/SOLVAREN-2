@@ -49,7 +49,8 @@ export const REPORT_CATALOG: readonly ReportDefinition[] = [
     description: 'Every transaction with provider references, statuses and failure reasons.',
     requiredPermission: 'reports:operational',
     columns: [
-      'Batch Reference', 'Recipient Name', 'Phone', 'Department', 'Amount (KES)', 'Status',
+      'Batch Reference', 'Recipient Name', 'Phone', 'Department', 'Role', 'Territory', 'Region',
+      'Amount (KES)', 'Status',
       'Failure Code', 'Failure Reason', 'M-PESA Receipt', 'Originator Conversation ID',
       'Submitted At (UTC)', 'Completed At (UTC)',
     ],
@@ -62,7 +63,8 @@ export const REPORT_CATALOG: readonly ReportDefinition[] = [
     description: 'Successful disbursements grouped by payment period and recipient.',
     requiredPermission: 'reports:operational',
     columns: [
-      'Payment Period', 'Recipient Name', 'Department', 'Amount (KES)', 'Batch Reference',
+      'Payment Period', 'Recipient Name', 'Department', 'Role', 'Territory', 'Region', 'Sales',
+      'Amount (KES)', 'Batch Reference',
       'M-PESA Receipt', 'Completed At (UTC)',
     ],
     supportsDateRange: true,

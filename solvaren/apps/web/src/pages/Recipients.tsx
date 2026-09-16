@@ -89,7 +89,9 @@ export function RecipientsPage({ capabilities }: { capabilities: Record<Permissi
               <tr>
                 <th>Name</th>
                 <th>Phone</th>
-                <th>Department</th>
+                <th>Role</th>
+                <th>Team</th>
+                <th>Territory / Region</th>
                 <th>Status</th>
                 <th className="num">Payments</th>
                 <th className="num">Mean amount</th>
@@ -102,7 +104,9 @@ export function RecipientsPage({ capabilities }: { capabilities: Record<Permissi
                 <tr key={r.recipientId}>
                   <td className="strong">{r.fullName}</td>
                   <td className="mono small">{r.msisdn}</td>
+                  <td className="small muted">{r.role ?? '—'}</td>
                   <td className="small muted">{r.departmentName ?? '—'}</td>
+                  <td className="small muted">{[r.territory, r.region].filter(Boolean).join(' / ') || '—'}</td>
                   <td>
                     <span className="chip" data-tone={r.status === 'ACTIVE' ? 'success' : r.status === 'BLOCKED' ? 'danger' : 'neutral'}>
                       {r.status}
@@ -161,6 +165,9 @@ function AddRecipientModal({ onClose, onAdded }: { onClose: () => void; onAdded:
   const [fullName, setFullName] = useState('');
   const [msisdn, setMsisdn] = useState('');
   const [externalReference, setExternalReference] = useState('');
+  const [role, setRole] = useState('');
+  const [territory, setTerritory] = useState('');
+  const [region, setRegion] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
 
@@ -173,6 +180,9 @@ function AddRecipientModal({ onClose, onAdded }: { onClose: () => void; onAdded:
         fullName,
         msisdn,
         ...(externalReference ? { externalReference } : {}),
+        ...(role ? { role } : {}),
+        ...(territory ? { territory } : {}),
+        ...(region ? { region } : {}),
       });
       onAdded();
     } catch (err) {
@@ -197,7 +207,19 @@ function AddRecipientModal({ onClose, onAdded }: { onClose: () => void; onAdded:
         </label>
         <label className="field">
           <span className="field-label">Reference (optional)</span>
-          <input className="input" placeholder="Employee ID" value={externalReference} onChange={(e) => setExternalReference(e.target.value)} />
+          <input className="input" placeholder="ID number" value={externalReference} onChange={(e) => setExternalReference(e.target.value)} />
+        </label>
+        <label className="field">
+          <span className="field-label">Role (optional)</span>
+          <input className="input" placeholder="e.g. Team Leader" value={role} onChange={(e) => setRole(e.target.value)} />
+        </label>
+        <label className="field">
+          <span className="field-label">Territory (optional)</span>
+          <input className="input" value={territory} onChange={(e) => setTerritory(e.target.value)} />
+        </label>
+        <label className="field">
+          <span className="field-label">Region (optional)</span>
+          <input className="input" value={region} onChange={(e) => setRegion(e.target.value)} />
         </label>
         <div className="card-footer">
           <button type="button" className="button" data-variant="ghost" onClick={onClose}>Cancel</button>

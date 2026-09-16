@@ -35,6 +35,9 @@ const recipientSchema = z.object({
   externalReference: z.string().trim().max(100).optional(),
   departmentId: z.string().uuid().optional(),
   notes: z.string().trim().max(500).optional(),
+  role: z.string().trim().max(80).optional(),
+  territory: z.string().trim().max(80).optional(),
+  region: z.string().trim().max(80).optional(),
 });
 
 directoryRoutes.post('/recipients', requirePermissions('recipients:write'), async (c) => {  const actor = actorOf(c);
@@ -46,16 +49,20 @@ directoryRoutes.post('/recipients', requirePermissions('recipients:write'), asyn
       const rows = await tx<{ id: string }[]>`
         INSERT INTO recipients (
           organization_id, full_name, msisdn, external_reference, department_id, notes,
-          created_by_user_id
+          role, territory, region, created_by_user_id
         ) VALUES (
           ${actor.organizationId}, ${body.fullName}, ${normalizeMsisdn(body.msisdn)},
           ${body.externalReference ?? null}, ${body.departmentId ?? null}, ${body.notes ?? null},
+          ${body.role ?? null}, ${body.territory ?? null}, ${body.region ?? null},
           ${actor.userId}
         )
         ON CONFLICT (organization_id, msisdn) DO UPDATE
           SET full_name = EXCLUDED.full_name,
               external_reference = COALESCE(EXCLUDED.external_reference, recipients.external_reference),
-              department_id = COALESCE(EXCLUDED.department_id, recipients.department_id)
+              department_id = COALESCE(EXCLUDED.department_id, recipients.department_id),
+              role = COALESCE(EXCLUDED.role, recipients.role),
+              territory = COALESCE(EXCLUDED.territory, recipients.territory),
+              region = COALESCE(EXCLUDED.region, recipients.region)
         RETURNING id
       `;
       await writeAuditEvent(tx, {
@@ -99,12 +106,16 @@ directoryRoutes.get('/recipients', requirePermissions('recipients:read'), async 
         created_at: string;
         paid_count: string;
         total_paid_cents: string;
+        role: string | null;
+        territory: string | null;
+        region: string | null;
       }[]
     >`
       SELECT r.id, r.full_name, r.msisdn, r.external_reference,
              d.name AS department_name, r.status, r.notes, r.created_at,
              COALESCE(h.successful_payment_count, 0) AS paid_count,
-             COALESCE(h.mean_amount_cents, 0) AS total_paid_cents
+             COALESCE(h.mean_amount_cents, 0) AS total_paid_cents,
+             r.role, r.territory, r.region
         FROM recipients r
         LEFT JOIN departments d ON d.id = r.department_id
         LEFT JOIN recipient_payment_history h ON h.recipient_id = r.id
@@ -137,6 +148,9 @@ directoryRoutes.get('/recipients', requirePermissions('recipients:read'), async 
       createdAt: r.created_at,
       paymentCount: Number(r.paid_count),
       meanAmountCents: Number(r.total_paid_cents),
+      role: r.role,
+      territory: r.territory,
+      region: r.region,
     })),
     total: data.total,
     limit,
@@ -154,6 +168,9 @@ directoryRoutes.patch('/recipients/:id', requirePermissions('recipients:write'),
       departmentId: z.string().uuid().nullable().optional(),
       status: z.enum(['ACTIVE', 'INACTIVE', 'BLOCKED']).optional(),
       notes: z.string().trim().max(500).nullable().optional(),
+      role: z.string().trim().max(80).nullable().optional(),
+      territory: z.string().trim().max(80).nullable().optional(),
+      region: z.string().trim().max(80).nullable().optional(),
     })
     .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to change' })
     .parse(await c.req.json());
@@ -175,6 +192,9 @@ directoryRoutes.patch('/recipients/:id', requirePermissions('recipients:write'),
           department_id = COALESCE(${body.departmentId ?? null}, department_id),
           status = COALESCE(${body.status ?? null}, status),
           notes = COALESCE(${body.notes ?? null}, notes),
+          role = COALESCE(${body.role ?? null}, role),
+          territory = COALESCE(${body.territory ?? null}, territory),
+          region = COALESCE(${body.region ?? null}, region),
           updated_at = now()
         WHERE id = ${recipientId}
       `;

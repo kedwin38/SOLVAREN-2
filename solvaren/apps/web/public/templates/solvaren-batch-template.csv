@@ -1,8 +1,5 @@
-Recipient Name,Phone,Amount,Department,Reference,Remarks
-Amina Wanjiru Njeri,254712345678,45000,Finance,EMP-01001,May 2026 salary
-Brian Otieno Ochieng,254723456789,52500,Operations,EMP-01002,May 2026 salary
-Cynthia Achieng Odhiambo,254701234567,38000,Operations,EMP-01003,May 2026 salary
-David Kamau Mwangi,254734567890,120000,Engineering,EMP-01004,May 2026 salary and transport allowance
-"Njoroge, Grace Wangui",254745678901,67500,Human Resources,EMP-01005,May 2026 salary
-Faith Chebet Rono,254711223344,2500,Internship,EMP-01006,Monthly stipend
-Samuel Kiprop Bett,254733445566,15000,Research,EMP-01007,Field data collection reimbursement
+PHONE NUMBER,ID NUMBER,NAMES,ROLE,TEAM NAME,TERRITORY,REGION,SALES,PAYOUT
+254712345678,12345678,Amina Wanjiru Njeri,TEAM LEADER,NAIROBI A,NAIROBI,MOUNTAIN,142,8520
+254723456789,23456789,Brian Otieno Ochieng,TEAM LEADER,NAIROBI B,NAIROBI,MOUNTAIN,168,10080
+254701234567,34567890,Cynthia Achieng Odhiambo,TEAM LEADER,KISUMU A,KISUMU,LAKE,120,7200
+254734567890,45678901,David Kamau Mwangi,TEAM LEADER,KISUMU B,KISUMU,LAKE,99,5940

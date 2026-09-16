@@ -98,7 +98,7 @@ export function BatchesPage({ capabilities, level, onReleased, onViewTransaction
               className="button"
               href="/templates/solvaren-batch-template.csv"
               download="solvaren-batch-template.csv"
-              title="Official upload template: recipient name, phone, amount (whole shillings), department, reference, remarks"
+              title="Official upload template: phone number, ID number, names, role, team name, territory, region, sales, payout (whole shillings)"
             >
               Download CSV template
             </a>
@@ -402,7 +402,7 @@ function BatchDetailModal({
           className="button"
           href="/templates/solvaren-batch-template.csv"
           download="solvaren-batch-template.csv"
-          title="Official template: recipient name, phone, amount (whole shillings), department, reference, remarks"
+          title="Official template: phone number, ID number, names, role, team name, territory, region, sales, payout (whole shillings)"
         >
           Download CSV template
         </a>
@@ -527,6 +527,8 @@ function BatchDetailModal({
                   <th>#</th>
                   <th>Recipient</th>
                   <th>Phone</th>
+                  <th>Role</th>
+                  <th>Team / Territory</th>
                   <th className="num">Amount</th>
                   <th>Status</th>
                 </tr>
@@ -537,6 +539,10 @@ function BatchDetailModal({
                     <td className="small muted">{i.sourceLineNumber ?? '—'}</td>
                     <td>{i.recipientName}</td>
                     <td className="mono small">{i.msisdn}</td>
+                    <td className="small muted">{i.role ?? '—'}</td>
+                    <td className="small muted">
+                      {[i.territory, i.region].filter(Boolean).join(' / ') || '—'}
+                    </td>
                     <td className="num"><Amount cents={i.amountCents} /></td>
                     <td><StatusChip status={i.status} /></td>
                   </tr>

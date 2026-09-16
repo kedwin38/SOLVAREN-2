@@ -79,6 +79,10 @@ interface ExplorerDbRow {
   msisdn: string;
   department_id: string | null;
   department_name: string | null;
+  role: string | null;
+  territory: string | null;
+  region: string | null;
+  sales_count: string | null;
   amount_cents: string;
   status: TxnState;
   failure_code: string | null;
@@ -122,6 +126,10 @@ async function queryExplorer(
            pi.msisdn_snapshot              AS msisdn,
            d.id                            AS department_id,
            d.name                          AS department_name,
+           pi.role_snapshot                AS role,
+           pi.territory_snapshot           AS territory,
+           pi.region_snapshot              AS region,
+           pi.sales_count,
            pi.amount_cents,
            t.status,
            t.failure_code,
@@ -215,6 +223,10 @@ transactionRoutes.get('/transactions', requirePermissions('transactions:read'), 
           msisdn: row.msisdn,
           departmentId: row.department_id,
           departmentName: row.department_name,
+          role: row.role,
+          territory: row.territory,
+          region: row.region,
+          salesCount: row.sales_count === null ? null : Number(row.sales_count),
           amountCents: Number(row.amount_cents),
           status: row.status,
           statusTone: statusTone(row.status),
@@ -259,7 +271,10 @@ transactionRoutes.get('/transactions/:id', requirePermissions('transactions:read
       SELECT t.id AS transaction_id, pi.id AS instruction_id, b.id AS batch_id,
              b.batch_reference, r.id AS recipient_id,
              pi.recipient_name_snapshot AS recipient_name, pi.msisdn_snapshot AS msisdn,
-             d.id AS department_id, d.name AS department_name, pi.amount_cents, t.status,
+             d.id AS department_id, d.name AS department_name,
+             pi.role_snapshot AS role, pi.territory_snapshot AS territory,
+             pi.region_snapshot AS region, pi.sales_count,
+             pi.amount_cents, t.status,
              t.failure_code, t.failure_reason, t.failure_class, t.provider_result_description,
              t.mpesa_receipt_number, t.conversation_id, t.originator_conversation_id,
              t.status_source, t.last_status_check_at, t.created_at, t.submitted_at,
@@ -314,6 +329,10 @@ transactionRoutes.get('/transactions/:id', requirePermissions('transactions:read
         recipientName: row.recipient_name,
         msisdn: row.msisdn,
         departmentName: row.department_name,
+        role: row.role,
+        territory: row.territory,
+        region: row.region,
+        salesCount: row.sales_count === null ? null : Number(row.sales_count),
         amountCents: Number(row.amount_cents),
         status: row.status,
         statusTone: statusTone(row.status),
@@ -406,10 +425,15 @@ transactionRoutes.post(
             amount_cents: string;
             remarks: string;
             occasion: string | null;
+            role_snapshot: string | null;
+            territory_snapshot: string | null;
+            region_snapshot: string | null;
+            sales_count: string | null;
           }[]
         >`
           SELECT pi.id, b.batch_reference, pi.recipient_id, pi.recipient_name_snapshot,
-                 pi.msisdn_snapshot, pi.department_id, pi.amount_cents, pi.remarks, pi.occasion
+                 pi.msisdn_snapshot, pi.department_id, pi.amount_cents, pi.remarks, pi.occasion,
+                 pi.role_snapshot, pi.territory_snapshot, pi.region_snapshot, pi.sales_count
             FROM payment_instructions pi
             JOIN payment_batches b ON b.id = pi.batch_id
            WHERE pi.id = ${transaction.instruction_id}
@@ -453,12 +477,15 @@ transactionRoutes.post(
         const inserted = await tx<{ id: string }[]>`
           INSERT INTO payment_instructions (
             organization_id, batch_id, recipient_id, recipient_name_snapshot, msisdn_snapshot,
-            department_id, amount_cents, remarks, occasion, retry_of_instruction_id
+            department_id, amount_cents, remarks, occasion, retry_of_instruction_id,
+            role_snapshot, territory_snapshot, region_snapshot, sales_count
           ) VALUES (
             ${actor.organizationId}, ${correctionBatchId}, ${original.recipient_id},
             ${original.recipient_name_snapshot}, ${original.msisdn_snapshot},
             ${original.department_id}, ${original.amount_cents}, ${original.remarks},
-            ${original.occasion}, ${original.id}
+            ${original.occasion}, ${original.id},
+            ${original.role_snapshot}, ${original.territory_snapshot}, ${original.region_snapshot},
+            ${original.sales_count}
           )
           RETURNING id
         `;
@@ -747,6 +774,9 @@ exportRoutes.get(
           recipientName: row.recipient_name,
           msisdn: row.msisdn,
           departmentName: row.department_name,
+          role: row.role,
+          territory: row.territory,
+          region: row.region,
           amountCents: Number(row.amount_cents),
           status: row.status,
           failureCode: row.failure_code ?? resolved.failureCode,
