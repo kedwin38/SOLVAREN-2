@@ -38,7 +38,7 @@ cannot get one.
 
 **3. No failure is invisible or unexplained.**
 Every failed transaction carries a provider code, a human-readable reason from a
-complete dictionary (all documented B2C, core-numeric and gateway codes — 55 entries),
+complete dictionary (all documented B2C, core-numeric and gateway codes — 56 entries),
 and a concrete operator action. The database refuses to store a FAILED transaction
 without a reason and a SUCCESS without a provider receipt.
 

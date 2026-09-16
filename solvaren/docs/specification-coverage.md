@@ -78,7 +78,7 @@ assertions.
 | Ambiguous outcomes → reconciliation, never resend | executor + `core/failure-reasons.ts` | **Verified** — duplicate-originator and 5xx/timeout codes classified AMBIGUOUS |
 | Callback secret embedded in stored URLs (predecessor's fatal defect) | `services/daraja-config.ts` | **Verified** — `check-invariants.sh` asserts the URL construction |
 | Callback replay protection by digest | routes/callbacks.ts | **Verified** — parser tests + duplicate handling |
-| Complete failure dictionary (55 codes incl. 100000000, 100000005/7/9, 404.003.01, 405.001) | `core/failure-reasons.ts` | **Verified** — seed generated from source; CI fails on drift |
+| Complete failure dictionary (56 codes incl. 100000000, 100000005/7/9, 404.001.01, 404.003.01, 405.001) | `core/failure-reasons.ts` | **Verified** — seed generated from source; CI fails on drift |
 | Live provider | — | **Not verified** — requires Safaricom credentials and a shortcode |
 
 ## §10 — Orchestration and scheduling

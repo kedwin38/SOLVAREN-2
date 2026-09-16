@@ -13,10 +13,10 @@
  *
  * Sources: B2C ResultCodes, M-PESA core numeric errors, and the platform-wide gateway
  * error table — complete, including 100000000 (request cached), 100000005/7/9,
- * 404.003.01 and 405.001 which earlier dictionaries missed.
+ * 404.001.01, 404.003.01 and 405.001 which earlier dictionaries missed.
  */
 
-export const FAILURE_DICTIONARY_VERSION = '2026.09.14' as const;
+export const FAILURE_DICTIONARY_VERSION = '2026.09.16' as const;
 
 export type FailureClass =
   | 'FUNDING' // the organization must move or add money
@@ -290,6 +290,13 @@ export const FAILURE_REASONS: Readonly<Record<string, FailureReason>> = Object.f
     'CREDENTIAL',
     'Level 3: confirm the Daraja app has the B2C product enabled, then re-test the connection',
     true,
+  ),
+  '404.001.01': D(
+    '404.001.01',
+    'Daraja reports the endpoint does not exist',
+    'REQUEST',
+    'Raise an engineering incident — the API path is wrong for this Daraja product',
+    false,
   ),
   '404.001.03': D(
     '404.001.03',
