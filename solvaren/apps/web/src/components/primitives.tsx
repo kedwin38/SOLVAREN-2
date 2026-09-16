@@ -160,6 +160,53 @@ export function Stat({ label, value, hint, tone }: { label: string; value: React
   );
 }
 
+export type DistributionTone = 'success' | 'danger' | 'warning' | 'info' | 'neutral';
+
+export interface DistributionSegment {
+  label: string;
+  value: number;
+  percent: number;
+  tone: DistributionTone;
+}
+
+/**
+ * A labelled, segmented bar showing how a total splits across a small number of named
+ * categories — "82% fast, 15% typical, 3% slow" reads in one glance where two isolated
+ * percentile numbers require already knowing what a percentile is. Zero-value segments
+ * are dropped so the bar and legend never show a category nobody has any of.
+ */
+export function DistributionBar({ headline, segments, ariaLabel }: { headline?: string; segments: readonly DistributionSegment[]; ariaLabel: string }) {
+  const visible = segments.filter((s) => s.value > 0);
+  if (visible.length === 0) {
+    return headline ? <p className="small muted">{headline}</p> : null;
+  }
+  return (
+    <div className="distribution">
+      {headline && <div className="distribution-headline">{headline}</div>}
+      <div className="distribution-track" role="img" aria-label={ariaLabel}>
+        {visible.map((s) => (
+          <div
+            key={s.label}
+            className="distribution-segment"
+            data-tone={s.tone}
+            style={{ flexBasis: `${s.percent}%`, flexGrow: s.percent }}
+            title={`${s.label}: ${s.value.toLocaleString()} (${s.percent}%)`}
+          />
+        ))}
+      </div>
+      <div className="distribution-legend">
+        {visible.map((s) => (
+          <div key={s.label} className="distribution-legend-item">
+            <span className="distribution-swatch" data-tone={s.tone} />
+            <span>{s.label}</span>
+            <span className="distribution-legend-value">{s.percent}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Modal with focus trap
 // ---------------------------------------------------------------------------

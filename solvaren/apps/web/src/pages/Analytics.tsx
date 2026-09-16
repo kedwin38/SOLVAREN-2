@@ -6,7 +6,7 @@
 import { useEffect, useState } from 'react';
 import type { Permission } from '@solvaren/core';
 import { api, ApiError } from '../lib/api.js';
-import { Amount, Card, Empty, ErrorPane, Loading, Notice, PageHeader, Stat } from '../components/primitives.js';
+import { Amount, Card, DistributionBar, Empty, ErrorPane, Loading, Notice, PageHeader, Stat } from '../components/primitives.js';
 
 const MOMENTUM_LABEL: Record<'ACCELERATING' | 'STEADY' | 'SLOWING' | 'INSUFFICIENT_DATA', string> = {
   ACCELERATING: 'Accelerating',
@@ -246,18 +246,15 @@ export function AnalyticsPage({ level, capabilities }: { level: 'L1' | 'L2' | 'L
           </Card>
 
           <Card title="Settlement speed">
-            <div className="stat-grid">
-              <Stat
-                label="Median (30d)"
-                value={briefing.settlement.medianSeconds !== null ? `${Math.round(briefing.settlement.medianSeconds)}s` : '—'}
-                hint="Submission to settlement, successful payments only"
-              />
-              <Stat
-                label="95th percentile (30d)"
-                value={briefing.settlement.p95Seconds !== null ? `${Math.round(briefing.settlement.p95Seconds)}s` : '—'}
-                hint="The slowest 1 in 20 successful payments"
-              />
-            </div>
+            <DistributionBar
+              headline={briefing.settlementDistribution.headline}
+              ariaLabel="How quickly payments settle, last 30 days"
+              segments={[
+                { label: 'Fast (under 30s)', value: briefing.settlementDistribution.fast, percent: briefing.settlementDistribution.fastPercent, tone: 'success' },
+                { label: 'Typical (30s–2min)', value: briefing.settlementDistribution.typical, percent: briefing.settlementDistribution.typicalPercent, tone: 'info' },
+                { label: 'Slow (2min+)', value: briefing.settlementDistribution.slow, percent: briefing.settlementDistribution.slowPercent, tone: 'warning' },
+              ]}
+            />
           </Card>
         </>
       )}

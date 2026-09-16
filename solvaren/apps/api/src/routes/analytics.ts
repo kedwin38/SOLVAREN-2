@@ -8,7 +8,15 @@
  */
 
 import { Hono } from 'hono';
-import { authorizationError, classifyMomentum, classifyRiskPosture } from '@solvaren/core';
+import {
+  authorizationError,
+  classifyMomentum,
+  classifyRiskPosture,
+  classifyOutcomeHealth,
+  summarizeDurationBuckets,
+  FAST_THRESHOLD_SECONDS,
+  SLOW_THRESHOLD_SECONDS,
+} from '@solvaren/core';
 import {
   requireAuth,
   requirePermissions,
@@ -50,11 +58,22 @@ analyticsRoutes.get('/operational', requirePermissions('analytics:basic'), async
          AND created_at > now() - interval '30 days'
     `;
 
-    // Median rather than mean: one reconciliation case sitting open for three days would
-    // drag a mean into uselessness.
-    const timing = await sql<{ median_seconds: number | null; p95_seconds: number | null }[]>`
+    // Median/p95 remain available for anyone who wants the raw statistics; the bucket
+    // counts (same underlying rows, same query, zero extra round trips) are what the
+    // dashboard actually renders — a distribution reads a lot faster than a percentile.
+    const timing = await sql<{
+      median_seconds: number | null;
+      p95_seconds: number | null;
+      fast: string;
+      typical: string;
+      slow: string;
+    }[]>`
       SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - submitted_at)))  AS median_seconds,
-             percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - submitted_at))) AS p95_seconds
+             percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - submitted_at))) AS p95_seconds,
+             COUNT(*) FILTER (WHERE EXTRACT(EPOCH FROM (completed_at - submitted_at)) < ${FAST_THRESHOLD_SECONDS}) AS fast,
+             COUNT(*) FILTER (WHERE EXTRACT(EPOCH FROM (completed_at - submitted_at)) >= ${FAST_THRESHOLD_SECONDS}
+                                AND EXTRACT(EPOCH FROM (completed_at - submitted_at)) < ${SLOW_THRESHOLD_SECONDS}) AS typical,
+             COUNT(*) FILTER (WHERE EXTRACT(EPOCH FROM (completed_at - submitted_at)) >= ${SLOW_THRESHOLD_SECONDS}) AS slow
         FROM transactions
        WHERE organization_id = ${actor.organizationId}
          AND status = 'SUCCESS' AND completed_at IS NOT NULL AND submitted_at IS NOT NULL
@@ -92,6 +111,19 @@ analyticsRoutes.get('/operational', requirePermissions('analytics:basic'), async
     const row = outcomes[0]!;
     const total = Number(row.total);
 
+    const outcomeHealth = classifyOutcomeHealth({
+      total,
+      success: Number(row.success),
+      failed: Number(row.failed),
+      timeout: Number(row.timeout),
+      inFlight: Number(row.in_flight),
+    });
+    const settlementDistribution = summarizeDurationBuckets({
+      fast: Number(timing[0]?.fast ?? 0),
+      typical: Number(timing[0]?.typical ?? 0),
+      slow: Number(timing[0]?.slow ?? 0),
+    });
+
     return {
       batchesByState: Object.fromEntries(batches.map((b) => [b.state, Number(b.count)])),
       workflows: {
@@ -108,10 +140,12 @@ analyticsRoutes.get('/operational', requirePermissions('analytics:basic'), async
         successRate: total > 0 ? Number(row.success) / total : null,
         failureRate: total > 0 ? (Number(row.failed) + Number(row.timeout)) / total : null,
       },
+      outcomeHealth,
       processingSeconds: {
         median: timing[0]?.median_seconds ?? null,
         p95: timing[0]?.p95_seconds ?? null,
       },
+      settlementDistribution,
       dailyTrend: trend.map((t) => ({ day: t.day, total: Number(t.total), failed: Number(t.failed) })),
       needsAttention: {
         failed: Number(attention[0]?.failed ?? 0),
@@ -413,12 +447,23 @@ analyticsRoutes.get('/executive/briefing', requirePermissions('analytics:executi
          WHERE organization_id = ${actor.organizationId} AND state IN ('OPEN', 'QUERYING', 'ESCALATED')
       `;
 
-    // Settlement speed is the executive-relevant half of "is money moving" — the
-    // operational dashboard shows the same percentile computation at a 30-day window;
-    // this mirrors it rather than introducing a second definition of "fast."
-    const settlement = await sql<{ median_seconds: number | null; p95_seconds: number | null }[]>`
+    // Settlement speed is the executive-relevant half of "is money moving" — the same
+    // bucketed distribution the operational dashboard shows, same 30-day window, same
+    // thresholds, so "fast" means the same thing at every level rather than an executive
+    // percentile disagreeing with an operator's percentile.
+    const settlement = await sql<{
+      median_seconds: number | null;
+      p95_seconds: number | null;
+      fast: string;
+      typical: string;
+      slow: string;
+    }[]>`
         SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - submitted_at)))  AS median_seconds,
-               percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - submitted_at))) AS p95_seconds
+               percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - submitted_at))) AS p95_seconds,
+               COUNT(*) FILTER (WHERE EXTRACT(EPOCH FROM (completed_at - submitted_at)) < ${FAST_THRESHOLD_SECONDS}) AS fast,
+               COUNT(*) FILTER (WHERE EXTRACT(EPOCH FROM (completed_at - submitted_at)) >= ${FAST_THRESHOLD_SECONDS}
+                                  AND EXTRACT(EPOCH FROM (completed_at - submitted_at)) < ${SLOW_THRESHOLD_SECONDS}) AS typical,
+               COUNT(*) FILTER (WHERE EXTRACT(EPOCH FROM (completed_at - submitted_at)) >= ${SLOW_THRESHOLD_SECONDS}) AS slow
           FROM transactions
          WHERE organization_id = ${actor.organizationId}
            AND status = 'SUCCESS' AND completed_at IS NOT NULL AND submitted_at IS NOT NULL
@@ -471,6 +516,11 @@ analyticsRoutes.get('/executive/briefing', requirePermissions('analytics:executi
         medianSeconds: settlement[0]?.median_seconds ?? null,
         p95Seconds: settlement[0]?.p95_seconds ?? null,
       },
+      settlementDistribution: summarizeDurationBuckets({
+        fast: Number(settlement[0]?.fast ?? 0),
+        typical: Number(settlement[0]?.typical ?? 0),
+        slow: Number(settlement[0]?.slow ?? 0),
+      }),
       risk: {
         openFindings,
         reviewedFindings: Number(findings[0]?.reviewed ?? 0),

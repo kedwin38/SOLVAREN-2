@@ -10,6 +10,7 @@ import { api, ApiError, type BalancePanel, type OperationalDashboard } from '../
 import {
   Amount,
   Card,
+  DistributionBar,
   Empty,
   ErrorPane,
   Loading,
@@ -17,6 +18,7 @@ import {
   Stat,
   StatusChip,
   relativeTime,
+  type DistributionSegment,
 } from '../components/primitives.js';
 
 interface Props {
@@ -66,6 +68,23 @@ export function Dashboard({ capabilities, level, fullName, onDrillDown: drillDow
   const attentionTotal = data.needsAttention.failed + data.needsAttention.timeout + data.needsAttention.reconciling;
   const workWaiting = data.workflows.awaitingL2Review + data.workflows.awaitingL3Authorization + data.workflows.onHold;
 
+  const outcomeTotal = data.transactions.total;
+  const outcomeSegments: DistributionSegment[] =
+    outcomeTotal > 0
+      ? [
+          { label: 'Succeeded', value: data.transactions.success, percent: Math.round((data.transactions.success / outcomeTotal) * 100), tone: 'success' },
+          { label: 'Failed', value: data.transactions.failed, percent: Math.round((data.transactions.failed / outcomeTotal) * 100), tone: 'danger' },
+          { label: 'Timed out', value: data.transactions.timeout, percent: Math.round((data.transactions.timeout / outcomeTotal) * 100), tone: 'warning' },
+          { label: 'In flight', value: data.transactions.inFlight, percent: Math.round((data.transactions.inFlight / outcomeTotal) * 100), tone: 'neutral' },
+        ]
+      : [];
+
+  const settlementSegments: DistributionSegment[] = [
+    { label: 'Fast (under 30s)', value: data.settlementDistribution.fast, percent: data.settlementDistribution.fastPercent, tone: 'success' },
+    { label: 'Typical (30s–2min)', value: data.settlementDistribution.typical, percent: data.settlementDistribution.typicalPercent, tone: 'info' },
+    { label: 'Slow (2min+)', value: data.settlementDistribution.slow, percent: data.settlementDistribution.slowPercent, tone: 'warning' },
+  ];
+
   return (
     <>
       <PageHeader
@@ -109,13 +128,29 @@ export function Dashboard({ capabilities, level, fullName, onDrillDown: drillDow
       )}
 
       <Card title="Payment operations (last 30 days)">
-        <div className="stat-grid">
-          <Stat label="Success rate" value={data.transactions.successRate !== null ? `${(data.transactions.successRate * 100).toFixed(1)}%` : '—'} tone="success" />
-          <Stat label="Failure rate" value={data.transactions.failureRate !== null ? `${(data.transactions.failureRate * 100).toFixed(1)}%` : '—'} tone={(data.transactions.failureRate ?? 0) > 0.05 ? 'danger' : undefined} />
-          <Stat label="In flight" value={data.transactions.inFlight} hint="Being processed now" />
-          <Stat label="Median processing" value={data.processingSeconds.median !== null ? `${data.processingSeconds.median}s` : '—'} />
-          <Stat label="95th percentile" value={data.processingSeconds.p95 !== null ? `${data.processingSeconds.p95}s` : '—'} />
-        </div>
+        {outcomeTotal === 0 ? (
+          <Empty title="No payments in the last 30 days" />
+        ) : (
+          <>
+            <DistributionBar
+              headline={data.outcomeHealth.headline}
+              segments={outcomeSegments}
+              ariaLabel="Payment outcomes over the last 30 days"
+            />
+            <div className="stat-grid" style={{ marginTop: 'var(--s4)' }}>
+              <Stat label="In flight" value={data.transactions.inFlight} hint="Being processed now" />
+              <Stat label="Total payments" value={data.transactions.total.toLocaleString()} />
+            </div>
+
+            <div style={{ marginTop: 'var(--s5)' }}>
+              <DistributionBar
+                headline={data.settlementDistribution.headline}
+                segments={settlementSegments}
+                ariaLabel="How quickly payments settle"
+              />
+            </div>
+          </>
+        )}
       </Card>
 
       <Card title="Workflow queue">

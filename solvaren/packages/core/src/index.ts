@@ -25,3 +25,4 @@ export * from './export-csv.js';
 export * from './cron.js';
 export * from './reports.js';
 export * from './executive-insights.js';
+export * from './operations-insight.js';

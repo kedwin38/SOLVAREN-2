@@ -622,6 +622,64 @@ button.stat:hover {
 .stat-hint { font-size: 12px; color: var(--ink-3); margin-top: var(--s2); }
 button.stat .stat-hint { color: var(--accent); font-weight: 550; }
 
+/* Distribution bar — a labelled, segmented composition/proportion readout. Reuses the
+   reserved status tokens (accent/danger/warning/info) plus a neutral for "no signal"
+   segments; never introduces a new hue. */
+.distribution {
+  margin-top: var(--s2);
+}
+.distribution-headline {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: var(--s3);
+}
+.distribution-track {
+  display: flex;
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface-2);
+  gap: 2px;
+}
+.distribution-segment {
+  height: 100%;
+  min-width: 3px;
+  border-radius: 4px;
+  transition: opacity var(--transition);
+}
+.distribution-segment[data-tone='success'] { background: var(--accent); }
+.distribution-segment[data-tone='danger'] { background: var(--danger); }
+.distribution-segment[data-tone='warning'] { background: var(--warning); }
+.distribution-segment[data-tone='info'] { background: var(--info); }
+.distribution-segment[data-tone='neutral'] { background: var(--ink-3); }
+.distribution-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s4);
+  margin-top: var(--s3);
+}
+.distribution-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.distribution-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.distribution-swatch[data-tone='success'] { background: var(--accent); }
+.distribution-swatch[data-tone='danger'] { background: var(--danger); }
+.distribution-swatch[data-tone='warning'] { background: var(--warning); }
+.distribution-swatch[data-tone='info'] { background: var(--info); }
+.distribution-swatch[data-tone='neutral'] { background: var(--ink-3); }
+.distribution-legend-value { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+
 .notice {
   padding: var(--s3) var(--s4);
   border-radius: var(--radius);

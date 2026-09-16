@@ -335,7 +335,9 @@ export interface OperationalDashboard {
   batchesByState: Record<string, number>;
   workflows: { awaitingL2Review: number; awaitingL3Authorization: number; onHold: number };
   transactions: { total: number; success: number; failed: number; timeout: number; inFlight: number; successRate: number | null; failureRate: number | null };
+  outcomeHealth: { band: 'HEALTHY' | 'WATCH' | 'DEGRADED'; successRate: number | null; failureRate: number | null; timeoutRate: number | null; headline: string };
   processingSeconds: { median: number | null; p95: number | null };
+  settlementDistribution: { total: number; fast: number; typical: number; slow: number; fastPercent: number; typicalPercent: number; slowPercent: number; headline: string };
   dailyTrend: { day: string; total: number; failed: number }[];
   needsAttention: { failed: number; timeout: number; reconciling: number };
 }
@@ -691,6 +693,7 @@ export const api = {
         monthOverMonth: { currentCents: number; previousCents: number; changePercent: number | null; largestMover: { departmentName: string; deltaCents: number } | null };
         momentum: 'ACCELERATING' | 'STEADY' | 'SLOWING' | 'INSUFFICIENT_DATA';
         settlement: { medianSeconds: number | null; p95Seconds: number | null };
+        settlementDistribution: { total: number; fast: number; typical: number; slow: number; fastPercent: number; typicalPercent: number; slowPercent: number; headline: string };
         risk: { openFindings: number; reviewedFindings: number };
         riskPosture: { band: 'STABLE' | 'WATCH' | 'ELEVATED'; reasons: string[] };
         unresolvedReconciliationCases: number;
