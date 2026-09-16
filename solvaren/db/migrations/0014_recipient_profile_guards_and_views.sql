@@ -35,6 +35,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- CREATE OR REPLACE VIEW can only append columns, never reorder or insert existing
+-- ones — the new columns must land after every column 0006's view already defined.
 CREATE OR REPLACE VIEW transaction_explorer AS
 SELECT t.id AS transaction_id,
        pi.id AS instruction_id,
@@ -45,10 +47,6 @@ SELECT t.id AS transaction_id,
        pi.msisdn_snapshot AS msisdn,
        d.id AS department_id,
        d.name AS department_name,
-       pi.role_snapshot AS role,
-       pi.territory_snapshot AS territory,
-       pi.region_snapshot AS region,
-       pi.sales_count AS sales_count,
        pi.amount_cents,
        t.status,
        t.failure_code,
@@ -63,7 +61,11 @@ SELECT t.id AS transaction_id,
        t.created_at,
        t.submitted_at,
        t.completed_at,
-       t.updated_at
+       t.updated_at,
+       pi.role_snapshot AS role,
+       pi.territory_snapshot AS territory,
+       pi.region_snapshot AS region,
+       pi.sales_count AS sales_count
   FROM transactions t
   JOIN payment_instructions pi ON pi.id = t.instruction_id
   JOIN payment_batches b       ON b.id = t.batch_id
