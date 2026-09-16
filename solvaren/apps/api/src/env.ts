@@ -118,6 +118,7 @@ export interface Env {
   API_BASE_URL: string;
   WEBAUTHN_RP_ID: string;
   WEBAUTHN_RP_NAME: string;
+  TRUST_CF_CONNECTING_IP: boolean;
 }
 
 export interface SecurityContext {

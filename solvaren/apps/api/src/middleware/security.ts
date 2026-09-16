@@ -6,11 +6,22 @@
  * immutable ceilings — is loaded per request, so a permission revoked a minute ago is
  * refused on the very next call.
  *
- * IP extraction is proxy-aware but platform-honest: Cloudflare's header is honoured when
- * present (CF sits in front of Railway as the optional edge), then the right-most
- * non-private X-Forwarded-For entry, then the socket address. The previous system read
- * only `CF-Connecting-IP` and recorded null IPs for every request in production — a
- * forensic gap this fixes.
+ * IP capture targets the Direct Connection IP (REMOTE_ADDR): the address of whatever
+ * actually opened the TCP connection to the edge in front of this service — the user's
+ * ISP gateway, home router or corporate firewall — not a value a client can assert about
+ * itself. Concretely, that means trusting only a header the edge itself sets and a client
+ * cannot overwrite:
+ *   - Railway (this platform's default edge) sets `X-Real-IP` to the true connecting
+ *     peer and does not forward a client-supplied `X-Forwarded-For` unmodified — Railway
+ *     never documents X-Forwarded-For as a trustworthy signal, so it is never trusted as
+ *     a primary source here.
+ *   - Cloudflare's `CF-Connecting-IP` is equally authoritative, but only when Cloudflare
+ *     is verified to be the sole ingress (the optional edge/WAF layer, spec §deployment);
+ *     trusting it unconditionally would let any direct caller who bypasses Cloudflare
+ *     forge their own IP, so it is honoured only when `TRUST_CF_CONNECTING_IP=true`.
+ *   - `X-Forwarded-For` (rightmost non-private hop) is kept only as a last-resort
+ *     fallback for deployments behind some other reverse proxy, never above the two
+ *     edge-authoritative headers above.
  */
 
 import type { MiddlewareHandler } from 'hono';
@@ -32,11 +43,26 @@ import type { AppContext } from '../env.js';
 const PRIVATE_IP =
   /^(10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|::1$|fc00:|fe80:|0\.0\.0\.0$)/;
 
-/** Best-effort client IP: CF edge → forwarded chain (rightmost non-private) → null. */
-export function clientIpOf(headers: Headers): string | null {
-  const cf = headers.get('CF-Connecting-IP');
-  if (cf && isPlausibleIp(cf)) return cf;
+/**
+ * Direct Connection IP (REMOTE_ADDR): the edge-authoritative signal only.
+ *
+ * `trustCfConnectingIp` must come from verified deployment configuration
+ * (`TRUST_CF_CONNECTING_IP`), never inferred from the presence of the header itself —
+ * a client can send `CF-Connecting-IP` on any request, so its mere presence proves
+ * nothing about whether Cloudflare actually sits in front.
+ */
+export function clientIpOf(headers: Headers, trustCfConnectingIp = false): string | null {
+  const real = headers.get('X-Real-IP');
+  if (real && isPlausibleIp(real)) return real;
 
+  if (trustCfConnectingIp) {
+    const cf = headers.get('CF-Connecting-IP');
+    if (cf && isPlausibleIp(cf)) return cf;
+  }
+
+  // Last-resort fallback for a reverse proxy topology other than Railway's edge or a
+  // verified Cloudflare front — not authoritative, so untrusted client-injected entries
+  // are dropped by walking from the right and skipping anything private/reserved.
   const forwarded = headers.get('X-Forwarded-For');
   if (forwarded) {
     const parts = forwarded.split(',').map((p) => p.trim()).filter(Boolean);
@@ -44,12 +70,8 @@ export function clientIpOf(headers: Headers): string | null {
       const candidate = parts[i]!;
       if (isPlausibleIp(candidate) && !PRIVATE_IP.test(candidate)) return candidate;
     }
-    const first = parts[0];
-    if (first && isPlausibleIp(first)) return first;
   }
 
-  const real = headers.get('X-Real-IP');
-  if (real && isPlausibleIp(real)) return real;
   return null;
 }
 
@@ -67,7 +89,7 @@ export const requestContext: MiddlewareHandler<AppContext> = async (c, next) => 
 
   c.set('correlationId', correlationId);
   c.set('securityContext', {
-    ip: clientIpOf(c.req.raw.headers),
+    ip: clientIpOf(c.req.raw.headers, c.env.TRUST_CF_CONNECTING_IP),
     userAgent: c.req.header('User-Agent')?.slice(0, 512) ?? null,
     country: c.req.header('CF-IPCountry') ?? null,
     deviceFingerprint: c.req.header('X-Solvaren-Device')?.slice(0, 200) ?? null,

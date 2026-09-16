@@ -49,6 +49,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 | `S3_FORCE_PATH_STYLE` | `true` for R2/MinIO. |
 | `ENVIRONMENT` | `production` — boot refuses `localhost` URLs and a `production` Daraja environment under a non-production ENVIRONMENT. |
 | `AI_API_KEY` | Optional. Without it the AI layer is simply off and the deterministic risk engine stands alone. |
+| `TRUST_CF_CONNECTING_IP` | `false` by default. Set `true` only when Cloudflare is verified to be the sole ingress — otherwise `CF-Connecting-IP` is a client-forgeable header and every recorded IP in the Security Center becomes untrustworthy. On Railway alone (no Cloudflare), leave unset: `X-Real-IP` is Railway's own edge-set Direct Connection IP and is always trusted. |
 | `PORT` | Railway injects. |
 
 Production boot checks (see `apps/api/src/config.ts`): required keys present and ≥32

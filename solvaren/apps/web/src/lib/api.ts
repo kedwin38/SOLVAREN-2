@@ -689,7 +689,10 @@ export const api = {
       request<{
         monthlyDisbursement: { period: string; totalCents: number; transactionCount: number }[];
         monthOverMonth: { currentCents: number; previousCents: number; changePercent: number | null; largestMover: { departmentName: string; deltaCents: number } | null };
+        momentum: 'ACCELERATING' | 'STEADY' | 'SLOWING' | 'INSUFFICIENT_DATA';
+        settlement: { medianSeconds: number | null; p95Seconds: number | null };
         risk: { openFindings: number; reviewedFindings: number };
+        riskPosture: { band: 'STABLE' | 'WATCH' | 'ELEVATED'; reasons: string[] };
         unresolvedReconciliationCases: number;
       }>('/analytics/executive/briefing'),
   },

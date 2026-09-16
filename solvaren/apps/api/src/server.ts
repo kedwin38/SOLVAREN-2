@@ -79,6 +79,7 @@ const env: Env = {
   API_BASE_URL: config.API_BASE_URL,
   WEBAUTHN_RP_ID: config.WEBAUTHN_RP_ID,
   WEBAUTHN_RP_NAME: config.WEBAUTHN_RP_NAME,
+  TRUST_CF_CONNECTING_IP: config.TRUST_CF_CONNECTING_IP,
   ...(config.AI_MODEL ? { AI_MODEL: config.AI_MODEL } : {}),
 };
 

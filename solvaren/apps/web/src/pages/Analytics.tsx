@@ -8,6 +8,24 @@ import type { Permission } from '@solvaren/core';
 import { api, ApiError } from '../lib/api.js';
 import { Amount, Card, Empty, ErrorPane, Loading, Notice, PageHeader, Stat } from '../components/primitives.js';
 
+const MOMENTUM_LABEL: Record<'ACCELERATING' | 'STEADY' | 'SLOWING' | 'INSUFFICIENT_DATA', string> = {
+  ACCELERATING: 'Accelerating',
+  STEADY: 'Steady',
+  SLOWING: 'Slowing',
+  INSUFFICIENT_DATA: 'Not enough history',
+};
+const MOMENTUM_TONE: Record<'ACCELERATING' | 'STEADY' | 'SLOWING' | 'INSUFFICIENT_DATA', 'success' | 'danger' | 'warning' | undefined> = {
+  ACCELERATING: 'success',
+  STEADY: undefined,
+  SLOWING: 'warning',
+  INSUFFICIENT_DATA: undefined,
+};
+const RISK_POSTURE_TONE: Record<'STABLE' | 'WATCH' | 'ELEVATED', 'success' | 'danger' | 'warning' | undefined> = {
+  STABLE: 'success',
+  WATCH: 'warning',
+  ELEVATED: 'danger',
+};
+
 export function AnalyticsPage({ level, capabilities }: { level: 'L1' | 'L2' | 'L3'; capabilities: Record<Permission, boolean> }) {
   const [tab, setTab] = useState<'financial' | 'briefing'>(capabilities['analytics:advanced'] ? 'financial' : 'briefing');
   const [financial, setFinancial] = useState<Awaited<ReturnType<typeof api.analytics.financial>> | null>(null);
@@ -84,7 +102,7 @@ export function AnalyticsPage({ level, capabilities }: { level: 'L1' | 'L2' | 'L
         </Notice>
       )}
 
-      {(tab === 'financial' || !capabilities['analytics:execensive' as never]) && financial !== null && (
+      {(tab === 'financial' || !capabilities['analytics:executive']) && financial !== null && (
         <>
           {financial.payrollCycles.length > 0 && (
             <Card title="Payroll cycles (successful disbursements per month)">
@@ -160,20 +178,25 @@ export function AnalyticsPage({ level, capabilities }: { level: 'L1' | 'L2' | 'L
 
       {(tab === 'briefing' || !capabilities['analytics:advanced']) && briefing && (
         <>
-          <Card title="Month over month">
+          <Card title="Disbursement momentum">
             <div className="stat-grid">
+              <Stat
+                label="Trend"
+                value={MOMENTUM_LABEL[briefing.momentum]}
+                hint="Compares the last two months' average against the two before — a single month's swing is noise, not a trend."
+                tone={MOMENTUM_TONE[briefing.momentum]}
+              />
               <Stat label="This month" value={<Amount cents={briefing.monthOverMonth.currentCents} />} />
               <Stat label="Last month" value={<Amount cents={briefing.monthOverMonth.previousCents} />} />
               <Stat
                 label="Change"
                 value={briefing.monthOverMonth.changePercent !== null ? `${briefing.monthOverMonth.changePercent > 0 ? '+' : ''}${briefing.monthOverMonth.changePercent}%` : '—'}
-                tone={briefing.monthOverMonth.changePercent !== null && briefing.monthOverMonth.changePercent > 10 ? 'warning' : undefined}
               />
               {briefing.monthOverMonth.largestMover && (
                 <Stat
                   label="Largest mover"
                   value={briefing.monthOverMonth.largestMover.departmentName}
-                  hint={`KES ${(briefing.monthOverMonth.largestMover.deltaCents / 100).toLocaleString()}`}
+                  hint={`${briefing.monthOverMonth.largestMover.deltaCents >= 0 ? '+' : ''}KES ${(briefing.monthOverMonth.largestMover.deltaCents / 100).toLocaleString()} vs. last month`}
                 />
               )}
             </div>
@@ -204,11 +227,36 @@ export function AnalyticsPage({ level, capabilities }: { level: 'L1' | 'L2' | 'L
             </Card>
           )}
 
-          <Card title="Risk position">
+          <Card title="Risk posture">
             <div className="stat-grid">
-              <Stat label="Open findings (30d)" value={briefing.risk.openFindings} tone={briefing.risk.openFindings > 0 ? 'warning' : 'success'} />
+              <Stat label="Overall posture" value={briefing.riskPosture.band} tone={RISK_POSTURE_TONE[briefing.riskPosture.band]} />
+              <Stat label="Open findings (30d)" value={briefing.risk.openFindings} />
               <Stat label="Reviewed findings (30d)" value={briefing.risk.reviewedFindings} />
-              <Stat label="Unresolved reconciliation" value={briefing.unresolvedReconciliationCases} tone={briefing.unresolvedReconciliationCases > 0 ? 'warning' : 'success'} />
+              <Stat label="Unresolved reconciliation" value={briefing.unresolvedReconciliationCases} />
+            </div>
+            {briefing.riskPosture.reasons.length > 0 ? (
+              <ul className="small muted" style={{ marginTop: 12, paddingLeft: 18 }}>
+                {briefing.riskPosture.reasons.map((reason, i) => (
+                  <li key={i}>{reason}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="small muted" style={{ marginTop: 12 }}>No conditions elevating risk posture right now.</p>
+            )}
+          </Card>
+
+          <Card title="Settlement speed">
+            <div className="stat-grid">
+              <Stat
+                label="Median (30d)"
+                value={briefing.settlement.medianSeconds !== null ? `${Math.round(briefing.settlement.medianSeconds)}s` : '—'}
+                hint="Submission to settlement, successful payments only"
+              />
+              <Stat
+                label="95th percentile (30d)"
+                value={briefing.settlement.p95Seconds !== null ? `${Math.round(briefing.settlement.p95Seconds)}s` : '—'}
+                hint="The slowest 1 in 20 successful payments"
+              />
             </div>
           </Card>
         </>

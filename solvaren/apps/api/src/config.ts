@@ -35,6 +35,15 @@ export interface Config {
   S3_ACCESS_KEY_ID: string;
   S3_SECRET_ACCESS_KEY: string;
   S3_FORCE_PATH_STYLE: boolean;
+
+  /**
+   * Whether Cloudflare is verified to be the sole edge in front of this deployment.
+   * `CF-Connecting-IP` is client-suppliable and only trustworthy when a proxy the
+   * client cannot bypass actually sets it — off by default, since Cloudflare is an
+   * optional layer (spec §deployment) and most environments run on Railway's edge
+   * alone, which sets `X-Real-IP` instead.
+   */
+  TRUST_CF_CONNECTING_IP: boolean;
 }
 
 function required(name: string): string {
@@ -90,6 +99,7 @@ export function loadConfigOrExit(): Config {
     DATABASE_URL: required('DATABASE_URL'),
     RUN_WORKERS: (optional('RUN_WORKERS') ?? 'true').toLowerCase() === 'true',
     RUN_SCHEDULER: (optional('RUN_SCHEDULER') ?? 'true').toLowerCase() === 'true',
+    TRUST_CF_CONNECTING_IP: (optional('TRUST_CF_CONNECTING_IP') ?? 'false').toLowerCase() === 'true',
 
     SESSION_SIGNING_KEY: requiredKey('SESSION_SIGNING_KEY'),
     SECRET_ENCRYPTION_KEY: requiredKey('SECRET_ENCRYPTION_KEY'),

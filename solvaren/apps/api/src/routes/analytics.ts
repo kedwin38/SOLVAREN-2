@@ -8,7 +8,7 @@
  */
 
 import { Hono } from 'hono';
-import { authorizationError } from '@solvaren/core';
+import { authorizationError, classifyMomentum, classifyRiskPosture } from '@solvaren/core';
 import {
   requireAuth,
   requirePermissions,
@@ -349,7 +349,20 @@ analyticsRoutes.get(
   },
 );
 
-/** GET /api/analytics/executive/briefing — the L3 organisation-wide intelligence view. */
+/**
+ * GET /api/analytics/executive/briefing — the L3 organisation-wide intelligence view.
+ *
+ * Deliberately reuses `department_expenditure` (the reporting layer's single source of
+ * truth for per-department totals, spec §0006) rather than re-deriving the same join
+ * twice with hand-rolled current/previous-month CTEs — one filtered query against the
+ * existing abstraction instead of two ad-hoc scans of `transactions`.
+ *
+ * The raw counters (a month-over-month percentage, an open-findings count, a case
+ * count) don't tell an executive whether to be concerned; `classifyMomentum` and
+ * `classifyRiskPosture` (packages/core) turn them into the two synthesized, board-
+ * readable signals that do — computed here, in one place, so the dashboard and any
+ * future consumer (the AI briefing, an export) agree on what "elevated" means.
+ */
 analyticsRoutes.get('/executive/briefing', requirePermissions('analytics:executive'), async (c) => {
   const actor = actorOf(c);
   if (actor.level !== 'L3') {
@@ -367,33 +380,19 @@ analyticsRoutes.get('/executive/briefing', requirePermissions('analytics:executi
          GROUP BY 1 ORDER BY 1 DESC
       `;
 
-    const topDepartment = await sql<{ department_name: string | null; delta_cents: string }[]>`
-        WITH current_month AS (
-          SELECT d.name, COALESCE(SUM(pi.amount_cents), 0) AS total
-            FROM transactions t
-            JOIN payment_instructions pi ON pi.id = t.instruction_id
-            LEFT JOIN departments d ON d.id = pi.department_id
-           WHERE t.organization_id = ${actor.organizationId} AND t.status = 'SUCCESS'
-             AND t.completed_at >= date_trunc('month', now())
-           GROUP BY d.name
-        ), previous_month AS (
-          SELECT d.name, COALESCE(SUM(pi.amount_cents), 0) AS total
-            FROM transactions t
-            JOIN payment_instructions pi ON pi.id = t.instruction_id
-            LEFT JOIN departments d ON d.id = pi.department_id
-           WHERE t.organization_id = ${actor.organizationId} AND t.status = 'SUCCESS'
-             AND t.completed_at >= date_trunc('month', now() - interval '1 month')
-             AND t.completed_at <  date_trunc('month', now())
-           GROUP BY d.name
-        )
-        SELECT COALESCE(c.name, p.name) AS department_name,
-               (COALESCE(c.total, 0) - COALESCE(p.total, 0)) AS delta_cents
-          FROM current_month c
-          FULL OUTER JOIN previous_month p ON p.name = c.name
-         ORDER BY (COALESCE(c.total, 0) - COALESCE(p.total, 0)) DESC
-         LIMIT 1
+    const departmentMonths = await sql<{ department_name: string; period_month: string; paid_cents: string }[]>`
+        SELECT department_name, period_month::text, paid_cents
+          FROM department_expenditure
+         WHERE organization_id = ${actor.organizationId}
+           AND period_month IN (
+             date_trunc('month', now())::DATE,
+             date_trunc('month', now() - interval '1 month')::DATE
+           )
       `;
 
+    // One risk-and-reconciliation pass instead of three: findings, the risk-band count
+    // driving the posture signal, and the reconciliation backlog all read from the same
+    // 30-day window, so they're combined into two lightweight queries rather than four.
     const findings = await sql<{ open: string; reviewed: string }[]>`
         SELECT COUNT(*) FILTER (WHERE disposition = 'OPEN')     AS open,
                COUNT(*) FILTER (WHERE disposition <> 'OPEN')    AS reviewed
@@ -402,14 +401,58 @@ analyticsRoutes.get('/executive/briefing', requirePermissions('analytics:executi
            AND created_at > now() - interval '30 days'
       `;
 
+    const riskBatches = await sql<{ count: string }[]>`
+        SELECT COUNT(*) AS count FROM payment_batches
+         WHERE organization_id = ${actor.organizationId}
+           AND risk_band IN ('CRITICAL', 'HIGH')
+           AND created_at > now() - interval '30 days'
+      `;
+
     const unresolved = await sql<{ count: string }[]>`
         SELECT COUNT(*) AS count FROM reconciliation_cases
          WHERE organization_id = ${actor.organizationId} AND state IN ('OPEN', 'QUERYING', 'ESCALATED')
       `;
 
+    // Settlement speed is the executive-relevant half of "is money moving" — the
+    // operational dashboard shows the same percentile computation at a 30-day window;
+    // this mirrors it rather than introducing a second definition of "fast."
+    const settlement = await sql<{ median_seconds: number | null; p95_seconds: number | null }[]>`
+        SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - submitted_at)))  AS median_seconds,
+               percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - submitted_at))) AS p95_seconds
+          FROM transactions
+         WHERE organization_id = ${actor.organizationId}
+           AND status = 'SUCCESS' AND completed_at IS NOT NULL AND submitted_at IS NOT NULL
+           AND created_at > now() - interval '30 days'
+      `;
+
     const thisMonth = months[0] ? Number(months[0].total_cents) : 0;
     const lastMonth = months[1] ? Number(months[1].total_cents) : 0;
     const changePercent = lastMonth > 0 ? ((thisMonth - lastMonth) / lastMonth) * 100 : null;
+
+    const currentPeriod = months[0]?.period ?? null;
+    const previousPeriod = months[1]?.period ?? null;
+    const byDepartment = new Map<string, { current: number; previous: number }>();
+    for (const row of departmentMonths) {
+      const entry = byDepartment.get(row.department_name) ?? { current: 0, previous: 0 };
+      if (row.period_month === currentPeriod) entry.current = Number(row.paid_cents);
+      else if (row.period_month === previousPeriod) entry.previous = Number(row.paid_cents);
+      byDepartment.set(row.department_name, entry);
+    }
+    let largestMover: { departmentName: string; deltaCents: number } | null = null;
+    for (const [departmentName, { current, previous }] of byDepartment) {
+      const deltaCents = current - previous;
+      if (largestMover === null || Math.abs(deltaCents) > Math.abs(largestMover.deltaCents)) {
+        largestMover = { departmentName, deltaCents };
+      }
+    }
+
+    const openFindings = Number(findings[0]?.open ?? 0);
+    const unresolvedReconciliationCases = Number(unresolved[0]?.count ?? 0);
+    const riskPosture = classifyRiskPosture({
+      openFindings,
+      criticalOrHighRiskBatches30d: Number(riskBatches[0]?.count ?? 0),
+      unresolvedReconciliationCases,
+    });
 
     return {
       monthlyDisbursement: months.map((m) => ({
@@ -421,18 +464,19 @@ analyticsRoutes.get('/executive/briefing', requirePermissions('analytics:executi
         currentCents: thisMonth,
         previousCents: lastMonth,
         changePercent: changePercent === null ? null : Number(changePercent.toFixed(1)),
-        largestMover: topDepartment[0]
-          ? {
-              departmentName: topDepartment[0].department_name ?? 'Unassigned',
-              deltaCents: Number(topDepartment[0].delta_cents),
-            }
-          : null,
+        largestMover,
+      },
+      momentum: classifyMomentum(months.map((m) => ({ period: m.period, totalCents: Number(m.total_cents) }))),
+      settlement: {
+        medianSeconds: settlement[0]?.median_seconds ?? null,
+        p95Seconds: settlement[0]?.p95_seconds ?? null,
       },
       risk: {
-        openFindings: Number(findings[0]?.open ?? 0),
+        openFindings,
         reviewedFindings: Number(findings[0]?.reviewed ?? 0),
       },
-      unresolvedReconciliationCases: Number(unresolved[0]?.count ?? 0),
+      riskPosture,
+      unresolvedReconciliationCases,
     };
   });
 
